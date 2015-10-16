@@ -23,5 +23,5 @@
                                {backlog,   128},
                                {nodelay,   true}]},
          {relay_backend_http, [{ping_path, "http://localhost:8080/ping"},
-                               {disconnect_path, "http://localhost:5252/internal/api/setDeviceStatus"}]}]},
+                               {disconnect_path, "http://localhost:8080/disconnect"}]}]},
   {applications, [kernel, stdlib, rabbit, amqp_client, mochiweb]}]}.
