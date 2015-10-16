@@ -18,7 +18,7 @@
 
 -export([info/2, initial_state/2,
          process_frame/2, amqp_pub/2, amqp_callback/2, send_will/1,
-         close_connection/1]).
+         close_connection/1, send_disconnect_info/1]).
 
 -include_lib("amqp_client/include/amqp_client.hrl").
 -include("rabbit_mqtt_frame.hrl").
@@ -461,8 +461,8 @@ creds(User, Pass, SSLLoginName) ->
         _ ->
             case {Pass =/= undefined, is_binary(DefaultPass), Anon =:= true, SSLLoginName == U} of
                  {true,  _,    _,    _} -> {U, list_to_binary(Pass)};
-                 {false, _,    _,    _} -> {U, none};
                  {false, true, true, _} -> {U, DefaultPass};
+                 {false, _,    _,    _} -> {U, none};
                  _                      -> {U, none}
             end
     end.
@@ -525,6 +525,18 @@ ensure_queue(Qos, #proc_state{ channels      = {Channel, _},
 
 send_will(PState = #proc_state{ will_msg = WillMsg }) ->
     amqp_pub(WillMsg, PState).
+
+send_disconnect_info(#proc_state{ auth_state = #auth_state{ username = Username }, 
+                                  client_id = ClientId}) ->
+    {disconnect_path, DisconnectPath} = lists:keyfind(disconnect_path, 1, rabbit_mqtt_util:env(relay_backend_http)),
+    case rabbit_mqtt_util:http_get(DisconnectPath, [{username, Username},{clientId, ClientId}]) of
+        {ok, {{_HTTP, Code, _}, _Headers, Body}} ->
+            case Code of
+                200 -> ok;
+                _ -> rabbit_log:log(connection, error, "send_disconnect_info error ~p ~p ~n", [Code, Body])
+            end;
+        {error, _} = E -> rabbit_log:log(connection, error, "send_disconnect_info error ~p ~n", [E])
+    end.
 
 amqp_pub(undefined, PState) ->
     PState;

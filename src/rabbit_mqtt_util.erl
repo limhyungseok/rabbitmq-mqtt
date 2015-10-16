@@ -77,3 +77,21 @@ path_for(Dir, VHost, Suffix) ->
 vhost_name_to_table_name(VHost) ->
   <<Num:128>> = erlang:md5(VHost),
   list_to_atom("rabbit_mqtt_retained_" ++ rabbit_misc:format("~36.16.0b", [Num])).
+
+http_post(Path, Request) ->
+    URI = uri_parser:parse(Path, [{port, 80}]),
+    {host, Host} = lists:keyfind(host, 1, URI),
+    {port, Port} = lists:keyfind(port, 1, URI),
+    HostHdr = rabbit_misc:format("~s:~b", [Host, Port]),
+    httpc:request(post, 
+                  {Path, [{"Host", HostHdr}], "application/x-www-form-urlencoded", mochiweb_util:urlencode(Request)}, 
+                  [{version, "HTTP/1.0"}], []).
+
+
+http_get(Path, Request) ->
+    GET_URI = Path ++ "?" ++ mochiweb_util:urlencode(Request),
+    URI = uri_parser:parse(GET_URI, [{port, 80}]),
+    {host, Host} = lists:keyfind(host, 1, URI),
+    {port, Port} = lists:keyfind(port, 1, URI),
+    HostHdr = rabbit_misc:format("~s:~b", [Host, Port]),
+    httpc:request(get, {GET_URI, [{"Host", HostHdr}]}, [{version, "HTTP/1.0"}], []).
