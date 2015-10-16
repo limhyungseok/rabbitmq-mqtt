@@ -21,5 +21,6 @@
                                {packet,    raw},
                                {reuseaddr, true},
                                {backlog,   128},
-                               {nodelay,   true}]}]},
-  {applications, [kernel, stdlib, rabbit, amqp_client]}]}.
+                               {nodelay,   true}]},
+         {disconnect_relay_path, "http://localhost:8080/xxxx"}]},
+  {applications, [kernel, stdlib, rabbit, amqp_client, mochiweb]}]}.
