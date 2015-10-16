@@ -528,8 +528,8 @@ send_will(PState = #proc_state{ will_msg = WillMsg }) ->
 
 send_disconnect_info(#proc_state{ auth_state = #auth_state{ username = Username }, 
                                   client_id = ClientId}) ->
-    case rabbit_mqtt_util:http_post(rabbit_mqtt_util:env(disconnect_relay_path), 
-                               [{username, Username},{clientId, ClientId}]) of
+    {disconnect_path, DisconnectPath} = lists:keyfind(disconnect_path, 1, rabbit_mqtt_util:env(relay_backend_http)),
+    case rabbit_mqtt_util:http_get(DisconnectPath, [{username, Username},{clientId, ClientId}]) of
         {ok, {{_HTTP, Code, _}, _Headers, Body}} ->
             case Code of
                 200 -> ok;
