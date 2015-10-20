@@ -103,6 +103,11 @@ parse_frame(Bin, #mqtt_frame_fixed{ type = Type,
         {?PUBACK, <<FrameBin:Length/binary, Rest/binary>>} ->
             <<MessageId:16/big>> = FrameBin,
             wrap(Fixed, #mqtt_frame_publish { message_id = MessageId }, Rest);
+        {?PINGREQ, <<FrameBin:Length/binary, Rest/binary>>} ->
+            case Length of
+                1 -> wrap(Fixed, FrameBin, Rest);
+                0 -> wrap(Fixed, Rest)
+            end ;
         {Subs, <<FrameBin:Length/binary, Rest/binary>>}
           when Subs =:= ?SUBSCRIBE orelse Subs =:= ?UNSUBSCRIBE ->
             1 = Qos,
@@ -110,8 +115,7 @@ parse_frame(Bin, #mqtt_frame_fixed{ type = Type,
             Topics = parse_topics(Subs, Rest1, []),
             wrap(Fixed, #mqtt_frame_subscribe { message_id  = MessageId,
                                                 topic_table = Topics }, Rest);
-        {Minimal, Rest}
-          when Minimal =:= ?DISCONNECT orelse Minimal =:= ?PINGREQ ->
+        {?DISCONNECT, Rest} ->
             Length = 0,
             wrap(Fixed, Rest);
         {_, TooShortBin} ->

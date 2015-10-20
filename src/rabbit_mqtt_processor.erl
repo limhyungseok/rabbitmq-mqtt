@@ -226,12 +226,19 @@ process_request(?UNSUBSCRIBE,
                 PState),
     {ok, PState #proc_state{ subscriptions = Subs1 }};
 
+process_request(?PINGREQ, #mqtt_frame{ variable = <<Flag>> }, PState) ->
+    rabbit_log:info("PINGREQ ~p ~n", [Flag]),
+    send_client(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = ?PINGRESP }},
+                PState),
+    {ok, PState};
+
 process_request(?PINGREQ, #mqtt_frame{}, PState) ->
     send_client(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = ?PINGRESP }},
                 PState),
     {ok, PState};
 
 process_request(?DISCONNECT, #mqtt_frame{}, PState) ->
+    send_disconnect_info(PState),
     {stop, PState}.
 
 %%----------------------------------------------------------------------------
