@@ -18,7 +18,7 @@
 
 -export([info/2, initial_state/2,
          process_frame/2, amqp_pub/2, amqp_callback/2, send_will/1,
-         close_connection/1, delete_flag_and_relay_disconnect_info/1]).
+         close_connection/1, del_and_relay_status/1]).
 
 -include_lib("amqp_client/include/amqp_client.hrl").
 -include("rabbit_mqtt_frame.hrl").
@@ -226,13 +226,13 @@ process_request(?UNSUBSCRIBE,
                 PState),
     {ok, PState #proc_state{ subscriptions = Subs1 }};
 
-process_request(?PINGREQ, #mqtt_frame{ variable = <<Flag>> }, 
+process_request(?PINGREQ, #mqtt_frame{ variable = <<Status>> }, 
                 PState = #proc_state{client_id = ClientId}) ->
-    rabbit_log:info("PINGREQ ~p ~n", [Flag]),
-    case rabbit_mqtt_client_flag:lookup(ClientId) of
-        not_found -> update_and_realy_flag(PState, Flag);
-        {client_flag, _, PrevFlag} when PrevFlag =/= Flag ->
-            update_and_realy_flag(PState, Flag);
+    rabbit_log:info("PINGREQ ~p ~n", [Status]),
+    case rabbit_mqtt_client_status:lookup(ClientId) of
+        not_found -> set_and_relay_status(PState, Status);
+        {client_status, _, PrevStatus} when PrevStatus =/= Status ->
+            set_and_relay_status(PState, Status);
         _ -> void
     end,
     send_client(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = ?PINGRESP }},
@@ -245,7 +245,7 @@ process_request(?PINGREQ, #mqtt_frame{}, PState) ->
     {ok, PState};
 
 process_request(?DISCONNECT, #mqtt_frame{}, PState) ->
-    delete_flag_and_relay_disconnect_info(PState),
+    del_and_relay_status(PState),
     {stop, PState}.
 
 %%----------------------------------------------------------------------------
@@ -537,40 +537,29 @@ ensure_queue(Qos, #proc_state{ channels      = {Channel, _},
             {Q, PState}
     end.
 
-update_and_realy_flag(#proc_state{ auth_state = #auth_state{ username = Username }, 
-                                      client_id = ClientId},
-                      Flag) ->
-    rabbit_mqtt_client_flag:insert(ClientId, Flag), 
-    send_client_flag(ClientId, Username, Flag).
+set_and_relay_status(#proc_state{ auth_state = #auth_state{ username = Username }, 
+                                  client_id = ClientId},
+                      Status) ->
+    rabbit_mqtt_client_status:insert(ClientId, Status), 
+    relay_client_status(ClientId, Username, Status).
 
-delete_flag_and_relay_disconnect_info(#proc_state{ auth_state = #auth_state{ username = Username }, 
+del_and_relay_status(#proc_state{ auth_state = #auth_state{ username = Username }, 
                                                    client_id = ClientId }) ->
-    rabbit_mqtt_client_flag:delete(ClientId),
-    send_disconnect_info(ClientId, Username).
+    rabbit_mqtt_client_status:delete(ClientId),
+    relay_client_status(ClientId, Username, 0).
 
 send_will(PState = #proc_state{ will_msg = WillMsg }) ->
     amqp_pub(WillMsg, PState).
 
-send_disconnect_info(ClientId, Username) ->
-    {disconnect_path, DisconnectPath} = lists:keyfind(disconnect_path, 1, rabbit_mqtt_util:env(relay_backend_http)),
-    case rabbit_mqtt_util:http_get(DisconnectPath, [{username, Username},{clientId, ClientId}]) of
+relay_client_status(ClientId, Username, Status) ->
+    RelayPath = rabbit_mqtt_util:env(relay_status_backend_http_path),
+    case rabbit_mqtt_util:http_get(RelayPath, [{username, Username},{clientId, ClientId}, {status, Status}]) of
         {ok, {{_HTTP, Code, _}, _Headers, Body}} ->
             case Code of
                 200 -> ok;
-                _ -> rabbit_log:log(connection, error, "send_disconnect_info error ~p ~p ~n", [Code, Body])
+                _ -> rabbit_log:log(connection, error, "relay status error ~p ~p ~n", [Code, Body])
             end;
-        {error, _} = E -> rabbit_log:log(connection, error, "send_disconnect_info error ~p ~n", [E])
-    end.
-
-send_client_flag(ClientId, Username, Flag) ->
-    {ping_path, PingPath} = lists:keyfind(ping_path, 1, rabbit_mqtt_util:env(relay_backend_http)),
-    case rabbit_mqtt_util:http_get(PingPath, [{username, Username},{clientId, ClientId}, {flag, Flag}]) of
-        {ok, {{_HTTP, Code, _}, _Headers, Body}} ->
-            case Code of
-                200 -> ok;
-                _ -> rabbit_log:log(connection, error, "send_client_flag error ~p ~p ~n", [Code, Body])
-            end;
-        {error, _} = E -> rabbit_log:log(connection, error, "send_client_flag error ~p ~n", [E])
+        {error, _} = E -> rabbit_log:log(connection, error, "relay status error ~p ~n", [E])
     end.
 
 amqp_pub(undefined, PState) ->

@@ -28,9 +28,9 @@ start(normal, []) ->
               {error, {already_started, Pid}} -> Pid
             end,
     gen_event:add_handler(EMPid, rabbit_mqtt_vhost_event_handler, []),
-    rabbit_mqtt_client_flag:open_table(),
+    rabbit_mqtt_client_status:open_table(),
     Result.
 
 stop(_State) ->
-    rabbit_mqtt_client_flag:close_table(),
+    rabbit_mqtt_client_status:close_table(),
     ok.

@@ -22,6 +22,5 @@
                                {reuseaddr, true},
                                {backlog,   128},
                                {nodelay,   true}]},
-         {relay_backend_http, [{ping_path, "http://localhost:8080/ping"},
-                               {disconnect_path, "http://localhost:8080/disconnect"}]}]},
+         {relay_status_backend_http_path, "http://localhost:8080/relay"}]},
   {applications, [kernel, stdlib, rabbit, amqp_client, mochiweb]}]}.

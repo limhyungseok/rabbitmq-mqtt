@@ -141,7 +141,7 @@ handle_info({start_keepalives, Keepalive},
 handle_info(keepalive_timeout, State = #state {conn_name = ConnStr,
                                                proc_state = PState}) ->
     log(error, "closing MQTT connection ~p (keepalive timeout) ~n", [ConnStr]),
-    rabbit_mqtt_processor:delete_flag_and_relay_disconnect_info(PState),
+    rabbit_mqtt_processor:del_and_relay_status(PState),
     send_will_and_terminate(PState, {shutdown, keepalive_timeout}, State);
 
 handle_info(Msg, State) ->
@@ -270,14 +270,14 @@ network_error(closed,
                               proc_state = PState }) ->
     log(info, "MQTT detected network error for ~p: peer closed TCP connection ~n",
         [ConnStr]),
-    rabbit_mqtt_processor:delete_flag_and_relay_disconnect_info(PState),
+    rabbit_mqtt_processor:del_and_relay_status(PState),
     send_will_and_terminate(PState, State);
 
 network_error(Reason,
               State = #state{ conn_name  = ConnStr,
                               proc_state = PState }) ->
     log(info, "MQTT detected network error for ~p: ~p ~n", [ConnStr, Reason]),
-    rabbit_mqtt_processor:delete_flag_and_relay_disconnect_info(PState),
+    rabbit_mqtt_processor:del_and_relay_status(PState),
     send_will_and_terminate(PState, State).
 
 run_socket(State = #state{ connection_state = blocked }) ->
