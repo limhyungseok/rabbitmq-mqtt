@@ -18,7 +18,7 @@
 
 -export([info/2, initial_state/2,
          process_frame/2, amqp_pub/2, amqp_callback/2, send_will/1,
-         close_connection/1, send_disconnect_info/1]).
+         close_connection/1, delete_flag_and_relay_disconnect_info/1]).
 
 -include_lib("amqp_client/include/amqp_client.hrl").
 -include("rabbit_mqtt_frame.hrl").
@@ -226,8 +226,15 @@ process_request(?UNSUBSCRIBE,
                 PState),
     {ok, PState #proc_state{ subscriptions = Subs1 }};
 
-process_request(?PINGREQ, #mqtt_frame{ variable = <<Flag>> }, PState) ->
+process_request(?PINGREQ, #mqtt_frame{ variable = <<Flag>> }, 
+                PState = #proc_state{client_id = ClientId}) ->
     rabbit_log:info("PINGREQ ~p ~n", [Flag]),
+    case rabbit_mqtt_client_flag:lookup(ClientId) of
+        not_found -> update_and_realy_flag(PState, Flag);
+        {client_flag, _, PrevFlag} when PrevFlag =/= Flag ->
+            update_and_realy_flag(PState, Flag);
+        _ -> void
+    end,
     send_client(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = ?PINGRESP }},
                 PState),
     {ok, PState};
@@ -238,7 +245,7 @@ process_request(?PINGREQ, #mqtt_frame{}, PState) ->
     {ok, PState};
 
 process_request(?DISCONNECT, #mqtt_frame{}, PState) ->
-    send_disconnect_info(PState),
+    delete_flag_and_relay_disconnect_info(PState),
     {stop, PState}.
 
 %%----------------------------------------------------------------------------
@@ -530,11 +537,21 @@ ensure_queue(Qos, #proc_state{ channels      = {Channel, _},
             {Q, PState}
     end.
 
+update_and_realy_flag(#proc_state{ auth_state = #auth_state{ username = Username }, 
+                                      client_id = ClientId},
+                      Flag) ->
+    rabbit_mqtt_client_flag:insert(ClientId, Flag), 
+    send_client_flag(ClientId, Username, Flag).
+
+delete_flag_and_relay_disconnect_info(#proc_state{ auth_state = #auth_state{ username = Username }, 
+                                                   client_id = ClientId }) ->
+    rabbit_mqtt_client_flag:delete(ClientId),
+    send_disconnect_info(ClientId, Username).
+
 send_will(PState = #proc_state{ will_msg = WillMsg }) ->
     amqp_pub(WillMsg, PState).
 
-send_disconnect_info(#proc_state{ auth_state = #auth_state{ username = Username }, 
-                                  client_id = ClientId}) ->
+send_disconnect_info(ClientId, Username) ->
     {disconnect_path, DisconnectPath} = lists:keyfind(disconnect_path, 1, rabbit_mqtt_util:env(relay_backend_http)),
     case rabbit_mqtt_util:http_get(DisconnectPath, [{username, Username},{clientId, ClientId}]) of
         {ok, {{_HTTP, Code, _}, _Headers, Body}} ->
@@ -543,6 +560,17 @@ send_disconnect_info(#proc_state{ auth_state = #auth_state{ username = Username 
                 _ -> rabbit_log:log(connection, error, "send_disconnect_info error ~p ~p ~n", [Code, Body])
             end;
         {error, _} = E -> rabbit_log:log(connection, error, "send_disconnect_info error ~p ~n", [E])
+    end.
+
+send_client_flag(ClientId, Username, Flag) ->
+    {ping_path, PingPath} = lists:keyfind(ping_path, 1, rabbit_mqtt_util:env(relay_backend_http)),
+    case rabbit_mqtt_util:http_get(PingPath, [{username, Username},{clientId, ClientId}, {flag, Flag}]) of
+        {ok, {{_HTTP, Code, _}, _Headers, Body}} ->
+            case Code of
+                200 -> ok;
+                _ -> rabbit_log:log(connection, error, "send_client_flag error ~p ~p ~n", [Code, Body])
+            end;
+        {error, _} = E -> rabbit_log:log(connection, error, "send_client_flag error ~p ~n", [E])
     end.
 
 amqp_pub(undefined, PState) ->

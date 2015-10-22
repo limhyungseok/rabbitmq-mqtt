@@ -55,3 +55,7 @@
 %% the table name
 -record(retained_message, {topic,
                            mqtt_msg}).
+
+%% ping status 
+-record(client_flag, {client_id,
+                      flag}).
