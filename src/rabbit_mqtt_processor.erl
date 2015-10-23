@@ -543,10 +543,13 @@ set_and_relay_status(#proc_state{ auth_state = #auth_state{ username = Username 
     rabbit_mqtt_client_status:insert(ClientId, Status), 
     relay_client_status(ClientId, Username, Status).
 
-del_and_relay_status(#proc_state{ auth_state = #auth_state{ username = Username }, 
-                                                   client_id = ClientId }) ->
-    rabbit_mqtt_client_status:delete(ClientId),
-    relay_client_status(ClientId, Username, 0).
+del_and_relay_status(PState) ->
+    case PState of 
+            #proc_state{ auth_state = #auth_state{ username = Username }, client_id = ClientId } ->
+                rabbit_mqtt_client_status:delete(ClientId),
+                relay_client_status(ClientId, Username, 0);
+            _ -> void
+    end.
 
 send_will(PState = #proc_state{ will_msg = WillMsg }) ->
     amqp_pub(WillMsg, PState).
