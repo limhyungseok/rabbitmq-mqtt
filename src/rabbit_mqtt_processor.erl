@@ -228,7 +228,6 @@ process_request(?UNSUBSCRIBE,
 
 process_request(?PINGREQ, #mqtt_frame{ variable = <<Status>> }, 
                 PState = #proc_state{client_id = ClientId}) ->
-    rabbit_log:info("PINGREQ ~p ~n", [Status]),
     case rabbit_mqtt_client_status:lookup(ClientId) of
         not_found -> set_and_relay_status(PState, Status);
         {client_status, _, PrevStatus} when PrevStatus =/= Status ->
