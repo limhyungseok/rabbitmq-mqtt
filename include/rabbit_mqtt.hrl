@@ -55,3 +55,7 @@
 %% the table name
 -record(retained_message, {topic,
                            mqtt_msg}).
+
+%% client status 
+-record(client_status, {client_id,
+                        status}).
