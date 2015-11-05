@@ -18,7 +18,7 @@
 
 -export([info/2, initial_state/2,
          process_frame/2, amqp_pub/2, amqp_callback/2, send_will/1,
-         close_connection/1, del_and_relay_status/1]).
+         close_connection/1, relay_status_for_disconnect/1]).
 
 -include_lib("amqp_client/include/amqp_client.hrl").
 -include("rabbit_mqtt_frame.hrl").
@@ -227,16 +227,17 @@ process_request(?UNSUBSCRIBE,
     {ok, PState #proc_state{ subscriptions = Subs1 }};
 
 process_request(?PINGREQ, #mqtt_frame{ variable = <<Status>> }, 
-                PState = #proc_state{client_id = ClientId}) ->
-    case rabbit_mqtt_client_status:lookup(ClientId) of
-        not_found -> set_and_relay_status(PState, Status);
-        {client_status, _, PrevStatus} when PrevStatus =/= Status ->
-            set_and_relay_status(PState, Status);
-        _ -> void
+                PState = #proc_state{ auth_state = #auth_state{ username = Username }, 
+                                      client_id = ClientId,
+                                      client_status = PrevClientStatus }) ->
+    case PrevClientStatus of
+        undefined -> relay_client_status(ClientId, Username, Status);
+        Status -> void;
+        _ -> relay_client_status(ClientId, Username, Status)
     end,
     send_client(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = ?PINGRESP }},
                 PState),
-    {ok, PState};
+    {ok, PState #proc_state{client_status = Status}};
 
 process_request(?PINGREQ, #mqtt_frame{}, PState) ->
     send_client(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = ?PINGRESP }},
@@ -244,7 +245,7 @@ process_request(?PINGREQ, #mqtt_frame{}, PState) ->
     {ok, PState};
 
 process_request(?DISCONNECT, #mqtt_frame{}, PState) ->
-    del_and_relay_status(PState),
+    relay_status_for_disconnect(PState),
     {stop, PState}.
 
 %%----------------------------------------------------------------------------
@@ -536,16 +537,9 @@ ensure_queue(Qos, #proc_state{ channels      = {Channel, _},
             {Q, PState}
     end.
 
-set_and_relay_status(#proc_state{ auth_state = #auth_state{ username = Username }, 
-                                  client_id = ClientId},
-                      Status) ->
-    rabbit_mqtt_client_status:insert(ClientId, Status), 
-    relay_client_status(ClientId, Username, Status).
-
-del_and_relay_status(PState) ->
+relay_status_for_disconnect(PState) ->
     case PState of 
             #proc_state{ auth_state = #auth_state{ username = Username }, client_id = ClientId } ->
-                rabbit_mqtt_client_status:delete(ClientId),
                 relay_client_status(ClientId, Username, 0);
             _ -> void
     end.
