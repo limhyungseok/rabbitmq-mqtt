@@ -45,7 +45,8 @@
                       %% Retained messages handler. See rabbit_mqtt_retainer_sup
                       %% and rabbit_mqtt_retainer.
                       retainer_pid,
-                      auth_state}).
+                      auth_state,
+                      client_status}).
 
 -record(auth_state, {username,
                      user,
@@ -56,6 +57,3 @@
 -record(retained_message, {topic,
                            mqtt_msg}).
 
-%% client status 
--record(client_status, {client_id,
-                        status}).
