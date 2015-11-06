@@ -231,7 +231,6 @@ process_request(?PINGREQ, #mqtt_frame{ variable = <<Status>> },
                                       client_id = ClientId,
                                       client_status = PrevClientStatus }) ->
     case PrevClientStatus of
-        undefined -> relay_client_status(ClientId, Username, Status);
         Status -> void;
         _ -> relay_client_status(ClientId, Username, Status)
     end,
