@@ -8,11 +8,11 @@
 %% the License for the specific language governing rights and
 %% limitations under the License.
 %%
-%% The Original Code is RabbitMQ.
+%% This file was created in refrring rabbit_mqtt_retained_msg_store_ets.erl
 %%
-%% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2014 GoPivotal, Inc.  All rights reserved.
-%%
+%% The Initial Developer of the Original Code is WorksMobile, Inc.
+%% Copyright (c) 2015 WorksMobile, Inc.  All rights reserved.
+%% 
 
 -module(rabbit_mqtt_retained_msg_store_mnesia).
 
