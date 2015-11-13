@@ -44,8 +44,8 @@ new(_, _) ->
 
 recover(_, _) ->
   case lists:member(retained_message,mnesia:system_info(tables)) of
-      true -> rabbit_log:info("recover(_, _) true"),{ok, "already exist"};
-      false -> rabbit_log:info("recover(_, _) false"),{error, uninitialized}
+      true -> {ok, "already exist"};
+      false -> {error, uninitialized}
   end.
 
 insert(Topic, Msg, _) ->
