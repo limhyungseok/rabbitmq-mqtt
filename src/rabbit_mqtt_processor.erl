@@ -613,7 +613,7 @@ human_readable_mqtt_version(_) ->
 send_client(Frame, PState = #proc_state{ socket = Sock }) ->
     try rabbit_net:port_command(Sock, rabbit_mqtt_frame:serialise(Frame))
     catch
-        error:Reason -> self() ! {inet_async, Sock, {error, Reason}}
+        error:Reason -> self() ! {inet_reply, Sock, {error, Reason}}
     end.
 
 close_connection(PState = #proc_state{ connection = undefined }) ->
