@@ -610,7 +610,7 @@ human_readable_mqtt_version(4) ->
 human_readable_mqtt_version(_) ->
     "N/A".
 
-send_client(Frame, PState = #proc_state{ socket = Sock }) ->
+send_client(Frame, #proc_state{ socket = Sock }) ->
     try rabbit_net:port_command(Sock, rabbit_mqtt_frame:serialise(Frame))
     catch
         error:Reason -> self() ! {inet_reply, Sock, {error, Reason}}
