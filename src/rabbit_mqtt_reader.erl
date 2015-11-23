@@ -182,7 +182,7 @@ terminate({network_error, Reason}, _State) ->
 terminate(normal, #state{proc_state = ProcState,
                          conn_name  = ConnName}) ->
     rabbit_mqtt_processor:close_connection(ProcState),
-    log(error, "closing MQTT connection ~p (~s)~n", [self(), ConnName]),
+    log(info, "closing MQTT connection ~p (~s)~n", [self(), ConnName]),
     ok;
 
 terminate(Reason, #state{proc_state = ProcState,
