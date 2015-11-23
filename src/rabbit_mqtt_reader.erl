@@ -139,10 +139,9 @@ handle_info({start_keepalives, Keepalive},
     {noreply, State #state { keepalive = Heartbeater }};
 
 handle_info(keepalive_timeout, State = #state {conn_name = ConnStr,
-                                               proc_state = PState}) ->
+                                               proc_state = _PState}) ->
     log(error, "closing MQTT connection ~p (keepalive timeout) ~n", [ConnStr]),
-    rabbit_mqtt_processor:relay_status_for_disconnect(PState),
-    send_will_and_terminate(PState, {shutdown, keepalive_timeout}, State);
+    {stop, {shutdown, keepalive_timeout}, State};
 
 handle_info(Msg, State) ->
     {stop, {mqtt_unexpected_msg, Msg}, State}.
@@ -186,8 +185,10 @@ terminate(normal, #state{proc_state = ProcState,
     log(info, "closing MQTT connection ~p (~s)~n", [self(), ConnName]),
     ok;
 
-terminate(_Reason, #state{proc_state = ProcState}) ->
+terminate(Reason, #state{proc_state = ProcState,
+                          conn_name  = ConnName}) ->
     rabbit_mqtt_processor:close_connection(ProcState),
+    log(error, "closing MQTT connection ~p (~s) Reason:~p ~n", [self(), ConnName, Reason]),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -257,28 +258,18 @@ pstate(State = #state {}, PState = #proc_state{}) ->
 
 log(Level, Fmt, Args) -> rabbit_log:log(connection, Level, Fmt, Args).
 
-send_will_and_terminate(PState, State) ->
-    send_will_and_terminate(PState, {shutdown, conn_closed}, State).
-
-send_will_and_terminate(PState, Reason, State) ->
-    rabbit_mqtt_processor:send_will(PState),
-    % todo: flush channel after publish
-    {stop, Reason, State}.
-
 network_error(closed,
               State = #state{ conn_name  = ConnStr,
-                              proc_state = PState }) ->
+                              proc_state = _PState }) ->
     log(info, "MQTT detected network error for ~p: peer closed TCP connection ~n",
         [ConnStr]),
-    rabbit_mqtt_processor:relay_status_for_disconnect(PState),
-    send_will_and_terminate(PState, State);
+    {stop, {shutdown, conn_closed}, State};
 
 network_error(Reason,
               State = #state{ conn_name  = ConnStr,
-                              proc_state = PState }) ->
+                              proc_state = _PState }) ->
     log(info, "MQTT detected network error for ~p: ~p ~n", [ConnStr, Reason]),
-    rabbit_mqtt_processor:relay_status_for_disconnect(PState),
-    send_will_and_terminate(PState, State).
+    {stop, {shutdown, conn_closed}, State}.
 
 run_socket(State = #state{ connection_state = blocked }) ->
     State;
