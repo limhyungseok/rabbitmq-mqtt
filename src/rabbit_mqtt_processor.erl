@@ -17,8 +17,8 @@
 -module(rabbit_mqtt_processor).
 
 -export([info/2, initial_state/2,
-         process_frame/2, amqp_pub/2, amqp_callback/2, send_will/1,
-         close_connection/1, relay_status_for_disconnect/1]).
+         process_frame/2, amqp_pub/2, amqp_callback/2,
+         close_connection/1]).
 
 -include_lib("amqp_client/include/amqp_client.hrl").
 -include("rabbit_mqtt_frame.hrl").
@@ -244,7 +244,6 @@ process_request(?PINGREQ, #mqtt_frame{}, PState) ->
     {ok, PState};
 
 process_request(?DISCONNECT, #mqtt_frame{}, PState) ->
-    relay_status_for_disconnect(PState),
     {stop, PState}.
 
 %%----------------------------------------------------------------------------
@@ -616,10 +615,19 @@ send_client(Frame, #proc_state{ socket = Sock }) ->
         error:Reason -> self() ! {inet_reply, Sock, {error, Reason}}
     end.
 
+end_processing(PState) ->
+    relay_status_for_disconnect(PState),
+    send_will(PState).
+
 close_connection(PState = #proc_state{ connection = undefined }) ->
     PState;
 close_connection(PState = #proc_state{ connection = Connection,
                                        client_id  = ClientId }) ->
+    try end_processing(PState)
+    catch
+        _:EndErrorReason -> rabbit_log:error("~p ~p ~p ~n", [PState, EndErrorReason, erlang:get_stacktrace()])
+    end,
+    
     % todo: maybe clean session
     case ClientId of
         undefined -> ok;

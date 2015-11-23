@@ -47,7 +47,7 @@ handle_cast({go, Sock0, SockTransform, KeepaliveSup}, undefined) ->
     process_flag(trap_exit, true),
     case rabbit_net:connection_string(Sock0, inbound) of
         {ok, ConnStr} ->
-            log(info, "accepting MQTT connection ~w (~s)~n", [self(), ConnStr]),
+            log(info, "accepting MQTT connection ~p (~s)~n", [self(), ConnStr]),
             case SockTransform(Sock0) of
                 {ok, Sock} ->
                     rabbit_alarm:register(
@@ -83,7 +83,7 @@ handle_cast({go, Sock0, SockTransform, KeepaliveSup}, undefined) ->
 handle_cast(duplicate_id,
             State = #state{ proc_state = PState,
                             conn_name  = ConnName }) ->
-    log(warning, "MQTT disconnecting duplicate client id ~w (~w)~n",
+    log(warning, "MQTT disconnecting duplicate client id ~p (~p)~n",
                  [rabbit_mqtt_processor:info(client_id, PState), ConnName]),
     {stop, {shutdown, duplicate_id}, State};
 
@@ -139,10 +139,9 @@ handle_info({start_keepalives, Keepalive},
     {noreply, State #state { keepalive = Heartbeater }};
 
 handle_info(keepalive_timeout, State = #state {conn_name = ConnStr,
-                                               proc_state = PState}) ->
-    log(error, "closing MQTT connection ~w (keepalive timeout) ~n", [ConnStr]),
-    rabbit_mqtt_processor:relay_status_for_disconnect(PState),
-    send_will_and_terminate(PState, {shutdown, keepalive_timeout}, State);
+                                               proc_state = _PState}) ->
+    log(error, "closing MQTT connection ~p (keepalive timeout) ~n", [ConnStr]),
+    {stop, {shutdown, keepalive_timeout}, State};
 
 handle_info(Msg, State) ->
     {stop, {mqtt_unexpected_msg, Msg}, State}.
@@ -170,30 +169,26 @@ terminate({network_error,
        [ConnStr, Alert]);
 
 terminate({network_error, {ssl_upgrade_error, Reason}, ConnStr}, _State) ->
-    log(error, "MQTT detected TLS upgrade error on ~s: ~w~n",
+    log(error, "MQTT detected TLS upgrade error on ~s: ~p~n",
         [ConnStr, Reason]);
 
 terminate({network_error, Reason, ConnStr}, _State) ->
-    log(error, "MQTT detected network error on ~s: ~w~n",
+    log(error, "MQTT detected network error on ~s: ~p~n",
         [ConnStr, Reason]);
 
 terminate({network_error, Reason}, _State) ->
-    log(error, "MQTT detected network error: ~w~n", [Reason]);
+    log(error, "MQTT detected network error: ~p~n", [Reason]);
 
 terminate(normal, #state{proc_state = ProcState,
                          conn_name  = ConnName}) ->
-    rabbit_mqtt_processor:relay_status_for_disconnect(ProcState),
-    rabbit_mqtt_processor:send_will(ProcState),
     rabbit_mqtt_processor:close_connection(ProcState),
-    log(error, "closing MQTT connection ~w (~s)~n", [self(), ConnName]),
+    log(error, "closing MQTT connection ~p (~s)~n", [self(), ConnName]),
     ok;
 
 terminate(Reason, #state{proc_state = ProcState,
                           conn_name  = ConnName}) ->
-    rabbit_mqtt_processor:relay_status_for_disconnect(ProcState),
-    rabbit_mqtt_processor:send_will(ProcState),
     rabbit_mqtt_processor:close_connection(ProcState),
-    log(error, "closing MQTT connection ~w (~s) Reason:~w ~n", [self(), ConnName, Reason]),
+    log(error, "closing MQTT connection ~p (~s) Reason:~p ~n", [self(), ConnName, Reason]),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -232,18 +227,18 @@ process_received_bytes(Bytes,
                       State #state{ parse_state = PS,
                                     proc_state = ProcState1 });
                 {error, Reason, ProcState1} ->
-                    log(info, "MQTT protocol error ~w for connection ~w~n",
+                    log(info, "MQTT protocol error ~p for connection ~p~n",
                         [Reason, ConnStr]),
                     {stop, {shutdown, Reason}, pstate(State, ProcState1)};
                 {error, Error} ->
-                    log(error, "MQTT detected framing error '~w' for connection ~w~n",
+                    log(error, "MQTT detected framing error '~p' for connection ~p~n",
                         [Error, ConnStr]),
                     {stop, {shutdown, Error}, State};
                 {stop, ProcState1} ->
                     {stop, normal, pstate(State, ProcState1)}
             end;
         {error, Error} ->
-            log(error, "MQTT detected framing error '~w' for connection ~w~n",
+            log(error, "MQTT detected framing error '~p' for connection ~p~n",
                 [ConnStr, Error]),
             {stop, {shutdown, Error}, State}
     end.
@@ -263,28 +258,18 @@ pstate(State = #state {}, PState = #proc_state{}) ->
 
 log(Level, Fmt, Args) -> rabbit_log:log(connection, Level, Fmt, Args).
 
-send_will_and_terminate(PState, State) ->
-    send_will_and_terminate(PState, {shutdown, conn_closed}, State).
-
-send_will_and_terminate(PState, Reason, State) ->
-    rabbit_mqtt_processor:send_will(PState),
-    % todo: flush channel after publish
-    {stop, Reason, State}.
-
 network_error(closed,
               State = #state{ conn_name  = ConnStr,
-                              proc_state = PState }) ->
-    log(info, "MQTT detected network error for ~w: peer closed TCP connection ~n",
+                              proc_state = _PState }) ->
+    log(info, "MQTT detected network error for ~p: peer closed TCP connection ~n",
         [ConnStr]),
-    rabbit_mqtt_processor:relay_status_for_disconnect(PState),
-    send_will_and_terminate(PState, State);
+    {stop, {shutdown, conn_closed}, State};
 
 network_error(Reason,
               State = #state{ conn_name  = ConnStr,
-                              proc_state = PState }) ->
-    log(info, "MQTT detected network error for ~w: ~w ~n", [ConnStr, Reason]),
-    rabbit_mqtt_processor:relay_status_for_disconnect(PState),
-    send_will_and_terminate(PState, State).
+                              proc_state = _PState }) ->
+    log(info, "MQTT detected network error for ~p: ~p ~n", [ConnStr, Reason]),
+    {stop, {shutdown, conn_closed}, State}.
 
 run_socket(State = #state{ connection_state = blocked }) ->
     State;
