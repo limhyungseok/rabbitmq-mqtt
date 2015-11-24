@@ -47,6 +47,7 @@ process_frame(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = Type }},
     {error, connect_expected, PState};
 process_frame(Frame = #mqtt_frame{ fixed = #mqtt_frame_fixed{ type = Type }},
               PState) ->
+    rabbit_log:log(mqtt_packet, debug, "Request:~p ~p ~n", [Frame, PState]),
     process_request(Type, Frame, PState).
 
 process_request(?CONNECT,
@@ -609,7 +610,8 @@ human_readable_mqtt_version(4) ->
 human_readable_mqtt_version(_) ->
     "N/A".
 
-send_client(Frame, #proc_state{ socket = Sock }) ->
+send_client(Frame, PState = #proc_state{ socket = Sock }) ->
+    rabbit_log:log(mqtt_packet, debug, "Response:~p ~p ~n", [Frame, PState]),
     try rabbit_net:port_command(Sock, rabbit_mqtt_frame:serialise(Frame))
     catch
         error:Reason -> self() ! {inet_reply, Sock, {error, Reason}}
