@@ -41,13 +41,23 @@ initial_state(Socket,SSLLoginName) ->
 
 info(client_id, #proc_state{ client_id = ClientId }) -> ClientId.
 
+packet_log(#mqtt_frame{fixed = Fixed,
+                       variable = Variable}, 
+           #proc_state{subscriptions = Subscriptions,
+                       client_id = ClientId,
+                       auth_state = #auth_state{username = Username}}) ->
+    rabbit_log:log(mqtt_packet, debug, "~p ~p ~w ~p ~p", [Fixed, Variable, 
+                                                             Subscriptions, ClientId, 
+                                                             Username]);
+packet_log(Frame, PState) -> rabbit_log:log(mqtt_packet, debug, "~p ~p", [Frame, PState]).
+
 process_frame(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = Type }},
               PState = #proc_state{ connection = undefined } )
   when Type =/= ?CONNECT ->
     {error, connect_expected, PState};
 process_frame(Frame = #mqtt_frame{ fixed = #mqtt_frame_fixed{ type = Type }},
               PState) ->
-    rabbit_log:log(mqtt_packet, debug, "Request:~p ~p ~n", [Frame, PState]),
+    packet_log(Frame, PState),
     process_request(Type, Frame, PState).
 
 process_request(?CONNECT,
@@ -611,7 +621,7 @@ human_readable_mqtt_version(_) ->
     "N/A".
 
 send_client(Frame, PState = #proc_state{ socket = Sock }) ->
-    rabbit_log:log(mqtt_packet, debug, "Response:~p ~p ~n", [Frame, PState]),
+    packet_log(Frame, PState),
     try rabbit_net:port_command(Sock, rabbit_mqtt_frame:serialise(Frame))
     catch
         error:Reason -> self() ! {inet_reply, Sock, {error, Reason}}
