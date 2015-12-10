@@ -46,7 +46,7 @@ packet_log(#mqtt_frame{fixed = Fixed,
            #proc_state{subscriptions = Subscriptions,
                        client_id = ClientId,
                        auth_state = #auth_state{username = Username}}) ->
-    rabbit_log:log(mqtt_packet, debug, "~p ~p ~p ~p ~p", [Fixed, Variable, 
+    rabbit_log:log(mqtt_packet, debug, "~p ~p ~w ~p ~p", [Fixed, Variable, 
                                                              Subscriptions, ClientId, 
                                                              Username]);
 packet_log(Frame, PState) -> rabbit_log:log(mqtt_packet, debug, "~p ~p", [Frame, PState]).
