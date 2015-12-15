@@ -391,18 +391,23 @@ delivery_qos(Tag, Headers,   #proc_state{ consumer_tags = {_, Tag} }) ->
     end.
 
 maybe_clean_sess(PState = #proc_state { clean_sess = false }) ->
-    {_Queue, PState1} = ensure_queue(?QOS_1, PState),
+    {_Queue0, PState0} = ensure_queue(?QOS_0, PState),
+    {_Queue1, PState1} = ensure_queue(?QOS_1, PState0),
     PState1;
 maybe_clean_sess(PState = #proc_state { clean_sess = true,
                                         connection = Conn,
                                         client_id  = ClientId }) ->
-    {_, Queue} = rabbit_mqtt_util:subcription_queue_name(ClientId),
+    {Queue0, Queue1} = rabbit_mqtt_util:subcription_queue_name(ClientId),
     {ok, Channel} = amqp_connection:open_channel(Conn),
-    try amqp_channel:call(Channel, #'queue.delete'{ queue = Queue }) of
-        #'queue.delete_ok'{} -> ok = amqp_channel:close(Channel)
+    try amqp_channel:call(Channel, #'queue.delete'{ queue = Queue0 })
     catch
-        exit:_Error -> ok
+        exit:_Error0 -> ok
     end,
+    try amqp_channel:call(Channel, #'queue.delete'{ queue = Queue1 })
+    catch
+        exit:_Error1 -> ok
+    end,
+    amqp_channel:close(Channel),
     PState.
 
 %%----------------------------------------------------------------------------
