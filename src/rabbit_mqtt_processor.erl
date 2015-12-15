@@ -391,9 +391,9 @@ delivery_qos(Tag, Headers,   #proc_state{ consumer_tags = {_, Tag} }) ->
     end.
 
 maybe_clean_sess(PState = #proc_state { clean_sess = false }) ->
-    {_Queue1, PState1} = ensure_queue(?QOS_1, PState),
-    {_Queue2, PState2} = ensure_queue(?QOS_0, PState1),
-    PState2;
+    {_Queue0, PState0} = ensure_queue(?QOS_0, PState),
+    {_Queue1, PState1} = ensure_queue(?QOS_1, PState0),
+    PState1;
 maybe_clean_sess(PState = #proc_state { clean_sess = true,
                                         connection = Conn,
                                         client_id  = ClientId }) ->
