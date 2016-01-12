@@ -53,12 +53,13 @@ handle_cast({go, Sock0, SockTransform, KeepaliveSup}, undefined) ->
                     rabbit_alarm:register(
                       self(), {?MODULE, conserve_resources, []}),
                     ProcessorState = rabbit_mqtt_processor:initial_state(Sock,ssl_login_name(Sock)),
+                    erlang:send_after(rabbit_mqtt_util:env(connection_idle_timeout), self(), connection_idle_timeout),
                     {noreply,
                      control_throttle(
                        #state{socket           = Sock,
                               conn_name        = ConnStr,
                               await_recv       = false,
-                              connection_state = running,
+                              connection_state = connected,
                               keepalive        = {none, none},
                               keepalive_sup    = KeepaliveSup,
                               conserve         = false,
@@ -90,6 +91,14 @@ handle_cast(duplicate_id,
 handle_cast(Msg, State) ->
     {stop, {mqtt_unexpected_cast, Msg}, State}.
 
+handle_info(connection_idle_timeout, State = #state{connection_state = ConnectionState}) ->
+    case ConnectionState of
+        running ->
+            {noreply, State, hibernate};
+        _ ->
+            {stop, {connection_idle_timeout, "connection_idle_timeout"}, State}
+    end;
+
 handle_info({#'basic.deliver'{}, #amqp_msg{}, _DeliveryCtx} = Delivery,
             State = #state{ proc_state = ProcState }) ->
     callback_reply(State, rabbit_mqtt_processor:amqp_callback(Delivery,
@@ -111,9 +120,14 @@ handle_info({inet_reply, _Ref, ok}, State) ->
     {noreply, State, hibernate};
 
 handle_info({inet_async, Sock, _Ref, {ok, Data}},
-            State = #state{ socket = Sock }) ->
+            State = #state{ socket = Sock, connection_state = ConnectionState}) ->
+    case ConnectionState of
+        connected -> NextConnectionState = running ;
+        _ -> NextConnectionState = ConnectionState
+    end,
     process_received_bytes(
-      Data, control_throttle(State #state{ await_recv = false }));
+      Data, control_throttle(State #state{ await_recv = false,
+                                           connection_state = NextConnectionState }));
 
 handle_info({inet_async, _Sock, _Ref, {error, Reason}}, State = #state {}) ->
     network_error(Reason, State);
