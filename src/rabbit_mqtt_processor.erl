@@ -611,8 +611,14 @@ amqp_pub(#mqtt_msg{ qos        = Qos,
                                    rabbit_mqtt_util:mqtt2amqp(Topic)},
     Headers = [{<<"x-mqtt-publish-qos">>, byte, Qos},
                {<<"x-mqtt-dup">>, bool, Dup}],
-    Msg = #amqp_msg{ props   = #'P_basic'{ headers       = Headers,
-                                           delivery_mode = delivery_mode(Qos)},
+    Props = case Qos of
+        ?QOS_0 -> #'P_basic'{ headers       = Headers,
+                              delivery_mode = delivery_mode(Qos),
+                              expiration = <<"0">>};
+        _ -> #'P_basic'{ headers       = Headers,
+                         delivery_mode = delivery_mode(Qos)}
+    end,
+    Msg = #amqp_msg{ props   = Props,
                      payload = Payload },
     {UnackedPubs1, Ch, SeqNo1} =
         case Qos =:= ?QOS_1 andalso MessageId =/= undefined of
