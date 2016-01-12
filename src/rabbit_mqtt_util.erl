@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2015 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2016 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(rabbit_mqtt_util).
@@ -49,14 +49,12 @@ env(Key) ->
         undefined -> undefined
     end.
 
-coerce_env_value(default_pass, Val) -> to_binary(Val);
-coerce_env_value(default_user, Val) -> to_binary(Val);
-coerce_env_value(exchange, Val)     -> to_binary(Val);
-coerce_env_value(vhost, Val)        -> to_binary(Val);
+%% TODO: move to rabbit_common
+coerce_env_value(default_pass, Val) -> rabbit_data_coercion:to_binary(Val);
+coerce_env_value(default_user, Val) -> rabbit_data_coercion:to_binary(Val);
+coerce_env_value(exchange, Val)     -> rabbit_data_coercion:to_binary(Val);
+coerce_env_value(vhost, Val)        -> rabbit_data_coercion:to_binary(Val);
 coerce_env_value(_, Val)            -> Val.
-
-to_binary(Val) when is_list(Val) -> list_to_binary(Val);
-to_binary(Val)                   -> Val.
 
 table_lookup(undefined, _Key) ->
     undefined;
