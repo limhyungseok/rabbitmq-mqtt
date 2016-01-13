@@ -128,10 +128,11 @@ handle_info({inet_reply, _Ref, ok}, State) ->
 
 handle_info({inet_async, Sock, _Ref, {ok, Data}},
             State = #state{ socket = Sock, connection_state = ConnectionState}) ->
-    case ConnectionState of
-        connected -> NextConnectionState = running ;
-        _ -> NextConnectionState = ConnectionState
-    end,
+    NextConnectionState = 
+        case ConnectionState of
+            connected -> running ;
+            _ -> ConnectionState
+        end,
     process_received_bytes(
       Data, control_throttle(State #state{ await_recv = false,
                                            connection_state = NextConnectionState }));
