@@ -21,7 +21,7 @@
          {tcp_listeners, [1883]},
          {num_tcp_acceptors, 10},
          {tcp_listen_options, [{backlog,   128},
-                               {nodelay,   true}]}
+                               {nodelay,   true}]},
          {relay_status_backend_http_path, "http://localhost:8080/relay"},
-         {connection_idle_timeout, 5000}]}]},
-  {applications, [kernel, stdlib, rabbit, amqp_client, mochiweb]}]}.
+         {connection_idle_timeout, 5000}]},
+  {applications, [kernel, stdlib, rabbit, amqp_client]}]}.
