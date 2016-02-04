@@ -25,6 +25,7 @@ endif
 # parent project is on a topic branch, dependencies must be on the same
 # topic branch or fallback to `stable` or `master` whichever was the
 # base of the topic branch.
+
 dep_amqp_client                       = git_rmq rabbitmq-erlang-client $(current_rmq_ref) $(base_rmq_ref) master
 dep_rabbit                            = git_rmq rabbitmq-server $(current_rmq_ref) $(base_rmq_ref) master
 dep_rabbit_common                     = git_rmq rabbitmq-common $(current_rmq_ref) $(base_rmq_ref) master
