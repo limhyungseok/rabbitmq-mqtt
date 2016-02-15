@@ -22,6 +22,8 @@
                                {reuseaddr, true},
                                {backlog,   128},
                                {nodelay,   true}]},
-         {relay_status_backend_http_path, "http://localhost:8080/relay"},
+         {relay_status_backend_http, [{path, "http://localhost:8080/relay"},
+                                      {conn_timeout, 1000},
+                                      {timeout, 3000}]},
          {connection_idle_timeout, 5000}]},
   {applications, [kernel, stdlib, rabbit, amqp_client, mochiweb]}]}.
