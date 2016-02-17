@@ -18,7 +18,7 @@
 
 -export([info/2, initial_state/2,
          process_frame/2, amqp_pub/2, amqp_callback/2,
-         close_connection/1]).
+         close_connection/1, http_relay/3]).
 
 -include_lib("amqp_client/include/amqp_client.hrl").
 -include("rabbit_mqtt_frame.hrl").
@@ -571,9 +571,8 @@ relay_status_for_disconnect(PState) ->
 send_will(PState = #proc_state{ will_msg = WillMsg }) ->
     amqp_pub(WillMsg, PState).
 
-relay_client_status(ClientId, Username, Status) ->
-    RelayPath = rabbit_mqtt_util:env(relay_status_backend_http_path),
-    case rabbit_mqtt_util:http_get(RelayPath, [{username, Username},{clientId, ClientId}, {status, Status}]) of
+http_relay(Path, Request, HttpOptions) ->
+    case rabbit_mqtt_util:http_get(Path, Request, HttpOptions) of
         {ok, {{_HTTP, Code, _}, _Headers, Body}} ->
             case Code of
                 200 -> ok;
@@ -581,6 +580,13 @@ relay_client_status(ClientId, Username, Status) ->
             end;
         {error, _} = E -> rabbit_log:log(connection, error, "relay status error ~p ~n", [E])
     end.
+
+relay_client_status(ClientId, Username, Status) ->
+    [{path, Path}, {conn_timeout, ConnTimeout}, {timeout, Timeout}] = rabbit_mqtt_util:env(relay_status_backend_http),
+    Request = [{username, Username},{clientId, ClientId}, {status, Status}],
+    HttpOptions = [{timeout, Timeout},{connect_timeout, ConnTimeout},{version, "HTTP/1.0"}],
+    spawn(rabbit_mqtt_processor, http_relay, [Path, Request, HttpOptions]).
+
 
 amqp_pub(undefined, PState) ->
     PState;
