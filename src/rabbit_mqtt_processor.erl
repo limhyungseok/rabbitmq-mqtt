@@ -43,13 +43,13 @@ info(client_id, #proc_state{ client_id = ClientId }) -> ClientId.
 
 packet_log(#mqtt_frame{fixed = Fixed,
                        variable = Variable}, 
-           #proc_state{subscriptions = Subscriptions,
-                       client_id = ClientId,
+           #proc_state{client_id = ClientId,
                        auth_state = #auth_state{username = Username}}) ->
-    rabbit_log:log(mqtt_packet, debug, "~p ~p ~w ~p ~p", [Fixed, Variable, 
-                                                             Subscriptions, ClientId, 
-                                                             Username]);
-packet_log(Frame, PState) -> rabbit_log:log(mqtt_packet, debug, "~p ~p", [Frame, PState]).
+    rabbit_log:log(mqtt_packet, debug, "~w ~w ~w ~p ~p", [self(), Fixed, Variable, ClientId, Username]);
+packet_log(#mqtt_frame{fixed = Fixed,
+                       variable = Variable}, 
+           _PState) -> rabbit_log:log(mqtt_packet, debug, "~w ~w ~p", [self(), Fixed, Variable]);
+packet_log(Frame, _PState) -> rabbit_log:log(mqtt_packet, debug, "~w ~p", [self(), Frame]).
 
 process_frame(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = Type }},
               PState = #proc_state{ connection = undefined } )
@@ -188,6 +188,8 @@ process_request(?SUBSCRIBE,
                             PState1 #proc_state{subscriptions =
                                                 dict:append(TopicName, SupportedQos, Subs)}}
                        end, {[], PState0}, Topics),
+        #proc_state{subscriptions = Subscriptions} = PState1,
+        rabbit_log:log(mqtt_packet, debug, "~w ~1024p", [self(), Subscriptions]),
         send_client(#mqtt_frame{fixed    = #mqtt_frame_fixed{type = ?SUBACK},
                                 variable = #mqtt_frame_suback{
                                             message_id = MessageId,
