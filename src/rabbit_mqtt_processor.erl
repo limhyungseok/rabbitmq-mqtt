@@ -18,7 +18,7 @@
 
 -export([info/2, initial_state/2, initial_state/3,
          process_frame/2, amqp_pub/2, amqp_callback/2, send_will/1,
-         close_connection/1]).
+         close_connection/1, http_relay/3]).
 
 %% for testing purposes
 -export([get_vhost_username/1]).
@@ -50,13 +50,13 @@ info(client_id, #proc_state{ client_id = ClientId }) -> ClientId.
 
 packet_log(#mqtt_frame{fixed = Fixed,
                        variable = Variable}, 
-           #proc_state{subscriptions = Subscriptions,
-                       client_id = ClientId,
+           #proc_state{client_id = ClientId,
                        auth_state = #auth_state{username = Username}}) ->
-    rabbit_log:log(mqtt_packet, debug, "~p ~p ~w ~p ~p", [Fixed, Variable, 
-                                                             Subscriptions, ClientId, 
-                                                             Username]);
-packet_log(Frame, PState) -> rabbit_log:log(mqtt_packet, debug, "~p ~p", [Frame, PState]).
+    rabbit_log:log(mqtt_packet, debug, "~w ~w ~w ~p ~p", [self(), Fixed, Variable, ClientId, Username]);
+packet_log(#mqtt_frame{fixed = Fixed,
+                       variable = Variable}, 
+           _PState) -> rabbit_log:log(mqtt_packet, debug, "~w ~w ~p", [self(), Fixed, Variable]);
+packet_log(Frame, _PState) -> rabbit_log:log(mqtt_packet, debug, "~w ~p", [self(), Frame]).
 
 process_frame(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = Type }},
               PState = #proc_state{ connection = undefined } )
@@ -202,6 +202,8 @@ process_request(?SUBSCRIBE,
                             PState1 #proc_state{subscriptions =
                                                 dict:append(TopicName, SupportedQos, Subs)}}
                        end, {[], PState0}, Topics),
+        #proc_state{subscriptions = Subscriptions} = PState1,
+        rabbit_log:log(mqtt_packet, debug, "~w ~1024p", [self(), Subscriptions]),
         SendFun(#mqtt_frame{fixed    = #mqtt_frame_fixed{type = ?SUBACK},
                             variable = #mqtt_frame_suback{
                                         message_id = MessageId,
@@ -613,9 +615,8 @@ relay_status_for_disconnect(PState) ->
 send_will(PState = #proc_state{ will_msg = WillMsg }) ->
     amqp_pub(WillMsg, PState).
 
-relay_client_status(ClientId, Username, Status) ->
-    RelayPath = rabbit_mqtt_util:env(relay_status_backend_http_path),
-    case rabbit_mqtt_util:http_get(RelayPath, [{username, Username},{clientId, ClientId}, {status, Status}]) of
+http_relay(Path, Request, HttpOptions) ->
+    case rabbit_mqtt_util:http_get(Path, Request, HttpOptions) of
         {ok, {{_HTTP, Code, _}, _Headers, Body}} ->
             case Code of
                 200 -> ok;
@@ -623,6 +624,13 @@ relay_client_status(ClientId, Username, Status) ->
             end;
         {error, _} = E -> rabbit_log:log(connection, error, "relay status error ~p ~n", [E])
     end.
+
+relay_client_status(ClientId, Username, Status) ->
+    [{path, Path}, {conn_timeout, ConnTimeout}, {timeout, Timeout}] = rabbit_mqtt_util:env(relay_status_backend_http),
+    Request = [{username, Username},{clientId, ClientId}, {status, Status}],
+    HttpOptions = [{timeout, Timeout},{connect_timeout, ConnTimeout},{version, "HTTP/1.0"}],
+    spawn(rabbit_mqtt_processor, http_relay, [Path, Request, HttpOptions]).
+
 
 amqp_pub(undefined, PState) ->
     PState;
