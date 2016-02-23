@@ -26,4 +26,4 @@
                                       {conn_timeout, 1000},
                                       {timeout, 3000}]},
          {connection_idle_timeout, 5000}]},
-  {applications, [kernel, stdlib, rabbit, amqp_client]}]}.
+  {applications, [kernel, stdlib, rabbit, amqp_client, mochiweb]}]}.

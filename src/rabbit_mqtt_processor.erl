@@ -18,7 +18,7 @@
 
 -export([info/2, initial_state/2, initial_state/3,
          process_frame/2, amqp_pub/2, amqp_callback/2, send_will/1,
-         close_connection/1, http_relay/3]).
+         close_connection/1, close_connection_and_relay/1, http_relay/3]).
 
 %% for testing purposes
 -export([get_vhost_username/1]).
@@ -698,15 +698,21 @@ send_client(Frame, PState = #proc_state{ socket = Sock }) ->
         error:Reason -> self() ! {inet_reply, Sock, {error, Reason}}
     end.
 
-end_processing(PState) ->
-    relay_status_for_disconnect(PState),
-    send_will(PState).
 
-close_connection(PState = #proc_state{ connection = undefined }) ->
+close_connection_and_relay(PState = #proc_state{ connection = undefined }) ->
     PState;
+close_connection_and_relay(PState = #proc_state{ connection = _Connection,
+                                                 client_id  = _ClientId }) ->
+    try relay_status_for_disconnect(PState)
+    catch
+        _:EndErrorReason -> rabbit_log:error("~p ~p ~p ~n", [PState, EndErrorReason, erlang:get_stacktrace()])
+    end,
+    
+    close_connection(PState).
+
 close_connection(PState = #proc_state{ connection = Connection,
                                        client_id  = ClientId }) ->
-    try end_processing(PState)
+    try send_will(PState)
     catch
         _:EndErrorReason -> rabbit_log:error("~p ~p ~p ~n", [PState, EndErrorReason, erlang:get_stacktrace()])
     end,

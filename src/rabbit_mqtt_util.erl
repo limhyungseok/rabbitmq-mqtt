@@ -17,6 +17,7 @@
 -module(rabbit_mqtt_util).
 
 -include("rabbit_mqtt.hrl").
+-include_lib("rabbit_common/include/rabbit.hrl").
 
 -compile(export_all).
 
@@ -96,4 +97,10 @@ http_get(Path, Request, HTTPOptions) ->
     HostHdr = rabbit_misc:format("~s:~b", [Host, Port]),
     httpc:request(get, {GET_URI, [{"Host", HostHdr}]}, HTTPOptions, []).
 
-
+get_running_nodes() ->
+    S = rabbit_mnesia:status(),
+    Running = proplists:get_value(running_nodes, S),
+    lists:filter(fun (Node) 
+                    when Node =:= node() -> false;
+                    (_) -> true
+                 end, Running).
