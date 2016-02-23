@@ -11,14 +11,17 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2015 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2016 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(rabbit_mqtt_processor).
 
--export([info/2, initial_state/2,
-         process_frame/2, amqp_pub/2, amqp_callback/2,
+-export([info/2, initial_state/2, initial_state/3,
+         process_frame/2, amqp_pub/2, amqp_callback/2, send_will/1,
          close_connection/1, http_relay/3]).
+
+%% for testing purposes
+-export([get_vhost_username/1]).
 
 -include_lib("amqp_client/include/amqp_client.hrl").
 -include("rabbit_mqtt_frame.hrl").
@@ -28,16 +31,20 @@
 -define(FRAME_TYPE(Frame, Type),
         Frame = #mqtt_frame{ fixed = #mqtt_frame_fixed{ type = Type }}).
 
-initial_state(Socket,SSLLoginName) ->
-    #proc_state{ unacked_pubs  = gb_trees:empty(),
-                 awaiting_ack  = gb_trees:empty(),
-                 message_id    = 1,
-                 subscriptions = dict:new(),
-                 consumer_tags = {undefined, undefined},
-                 channels      = {undefined, undefined},
-                 exchange      = rabbit_mqtt_util:env(exchange),
-                 socket        = Socket,
-                 ssl_login_name = SSLLoginName }.
+initial_state(Socket, SSLLoginName) ->
+    initial_state(Socket, SSLLoginName, fun send_client/2).
+
+initial_state(Socket, SSLLoginName, SendFun) ->
+    #proc_state{ unacked_pubs   = gb_trees:empty(),
+                 awaiting_ack   = gb_trees:empty(),
+                 message_id     = 1,
+                 subscriptions  = dict:new(),
+                 consumer_tags  = {undefined, undefined},
+                 channels       = {undefined, undefined},
+                 exchange       = rabbit_mqtt_util:env(exchange),
+                 socket         = Socket,
+                 ssl_login_name = SSLLoginName,
+                 send_fun       = SendFun }.
 
 info(client_id, #proc_state{ client_id = ClientId }) -> ClientId.
 
@@ -62,13 +69,14 @@ process_frame(Frame = #mqtt_frame{ fixed = #mqtt_frame_fixed{ type = Type }},
 
 process_request(?CONNECT,
                 #mqtt_frame{ variable = #mqtt_frame_connect{
-                                          username   = Username,
-                                          password   = Password,
-                                          proto_ver  = ProtoVersion,
-                                          clean_sess = CleanSess,
-                                          client_id  = ClientId0,
-                                          keep_alive = Keepalive} = Var},
-                PState = #proc_state{ ssl_login_name = SSLLoginName }) ->
+                                           username   = Username,
+                                           password   = Password,
+                                           proto_ver  = ProtoVersion,
+                                           clean_sess = CleanSess,
+                                           client_id  = ClientId0,
+                                           keep_alive = Keepalive} = Var},
+                PState = #proc_state{ ssl_login_name = SSLLoginName,
+                                      send_fun = SendFun }) ->
     ClientId = case ClientId0 of
                    []    -> rabbit_mqtt_util:gen_client_id();
                    [_|_] -> ClientId0
@@ -114,9 +122,9 @@ process_request(?CONNECT,
                         end
                 end
         end,
-    send_client(#mqtt_frame{ fixed    = #mqtt_frame_fixed{ type = ?CONNACK},
-                             variable = #mqtt_frame_connack{
-                                         return_code = ReturnCode }}, PState1),
+    SendFun(#mqtt_frame{ fixed    = #mqtt_frame_fixed{ type = ?CONNACK},
+                         variable = #mqtt_frame_connack{
+                                     return_code = ReturnCode }}, PState1),
     {ok, PState1};
 
 process_request(?PUBACK,
@@ -135,9 +143,14 @@ process_request(?PUBACK,
     end;
 
 process_request(?PUBLISH,
-                #mqtt_frame{
-                  fixed = #mqtt_frame_fixed{ qos = ?QOS_2 }}, PState) ->
-    {error, qos2_not_supported, PState};
+                Frame = #mqtt_frame{ 
+                    fixed = Fixed = #mqtt_frame_fixed{ qos = ?QOS_2 }}, 
+                PState) ->
+    % Downgrade QOS_2 to QOS_1
+    process_request(?PUBLISH, 
+                    Frame#mqtt_frame{
+                        fixed = Fixed#mqtt_frame_fixed{ qos = ?QOS_1 }},
+                    PState);
 process_request(?PUBLISH,
                 #mqtt_frame{
                   fixed = #mqtt_frame_fixed{ qos    = Qos,
@@ -170,7 +183,8 @@ process_request(?SUBSCRIBE,
                   payload = undefined},
                 #proc_state{channels = {Channel, _},
                             exchange = Exchange,
-                            retainer_pid = RPid} = PState0) ->
+                            retainer_pid = RPid,
+                            send_fun = SendFun } = PState0) ->
     check_subscribe_or_die(Topics, fun() ->
         {QosResponse, PState1} =
             lists:foldl(fun (#mqtt_topic{name = TopicName,
@@ -190,10 +204,10 @@ process_request(?SUBSCRIBE,
                        end, {[], PState0}, Topics),
         #proc_state{subscriptions = Subscriptions} = PState1,
         rabbit_log:log(mqtt_packet, debug, "~w ~1024p", [self(), Subscriptions]),
-        send_client(#mqtt_frame{fixed    = #mqtt_frame_fixed{type = ?SUBACK},
-                                variable = #mqtt_frame_suback{
-                                            message_id = MessageId,
-                                            qos_table  = QosResponse}}, PState1),
+        SendFun(#mqtt_frame{fixed    = #mqtt_frame_fixed{type = ?SUBACK},
+                            variable = #mqtt_frame_suback{
+                                        message_id = MessageId,
+                                        qos_table  = QosResponse}}, PState1),
         %% we may need to send up to length(Topics) messages.
         %% if QoS is > 0 then we need to generate a message id,
         %% and increment the counter.
@@ -213,7 +227,8 @@ process_request(?UNSUBSCRIBE,
                   payload = undefined }, #proc_state{ channels      = {Channel, _},
                                                       exchange      = Exchange,
                                                       client_id     = ClientId,
-                                                      subscriptions = Subs0} = PState) ->
+                                                      subscriptions = Subs0,
+                                                      send_fun      = SendFun } = PState) ->
     Queues = rabbit_mqtt_util:subcription_queue_name(ClientId),
     Subs1 =
     lists:foldl(
@@ -234,25 +249,26 @@ process_request(?UNSUBSCRIBE,
           end, QosSubs),
         dict:erase(TopicName, Subs)
       end, Subs0, Topics),
-    send_client(#mqtt_frame{ fixed    = #mqtt_frame_fixed { type       = ?UNSUBACK },
-                             variable = #mqtt_frame_suback{ message_id = MessageId }},
+    SendFun(#mqtt_frame{ fixed    = #mqtt_frame_fixed { type       = ?UNSUBACK },
+                         variable = #mqtt_frame_suback{ message_id = MessageId }},
                 PState),
     {ok, PState #proc_state{ subscriptions = Subs1 }};
 
 process_request(?PINGREQ, #mqtt_frame{ variable = <<Status>> }, 
                 PState = #proc_state{ auth_state = #auth_state{ username = Username }, 
                                       client_id = ClientId,
-                                      client_status = PrevClientStatus }) ->
+                                      client_status = PrevClientStatus,
+                                      send_fun = SendFun}) ->
     case PrevClientStatus of
         Status -> void;
         _ -> relay_client_status(ClientId, Username, Status)
     end,
-    send_client(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = ?PINGRESP }},
+    SendFun(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = ?PINGRESP }},
                 PState),
     {ok, PState #proc_state{client_status = Status}};
 
-process_request(?PINGREQ, #mqtt_frame{}, PState) ->
-    send_client(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = ?PINGRESP }},
+process_request(?PINGREQ, #mqtt_frame{}, #proc_state{ send_fun = SendFun } = PState) ->
+    SendFun(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = ?PINGRESP }},
                 PState),
     {ok, PState};
 
@@ -268,7 +284,8 @@ hand_off_to_retainer(RetainerPid, Topic, Msg) ->
   rabbit_mqtt_retainer:retain(RetainerPid, Topic, Msg),
   ok.
 
-maybe_send_retained_message(RPid, #mqtt_topic{name = S, qos = SubscribeQos}, MsgId, PState) ->
+maybe_send_retained_message(RPid, #mqtt_topic{name = S, qos = SubscribeQos}, MsgId,
+                            #proc_state{ send_fun = SendFun } = PState) ->
   case rabbit_mqtt_retainer:fetch(RPid, S) of
     undefined -> false;
     Msg       ->
@@ -280,7 +297,7 @@ maybe_send_retained_message(RPid, #mqtt_topic{name = S, qos = SubscribeQos}, Msg
                   ?QOS_0 -> undefined;
                   ?QOS_1 -> MsgId
                 end,
-                send_client(#mqtt_frame{fixed = #mqtt_frame_fixed{
+                SendFun(#mqtt_frame{fixed = #mqtt_frame_fixed{
                     type = ?PUBLISH,
                     qos  = Qos,
                     dup  = false,
@@ -304,7 +321,8 @@ amqp_callback({#'basic.deliver'{ consumer_tag = ConsumerTag,
                DeliveryCtx} = Delivery,
               #proc_state{ channels      = {Channel, _},
                            awaiting_ack  = Awaiting,
-                           message_id    = MsgId } = PState) ->
+                           message_id    = MsgId,
+                           send_fun      = SendFun } = PState) ->
     amqp_channel:notify_received(DeliveryCtx),
     case {delivery_dup(Delivery), delivery_qos(ConsumerTag, Headers, PState)} of
         {true, {?QOS_0, ?QOS_1}} ->
@@ -314,7 +332,7 @@ amqp_callback({#'basic.deliver'{ consumer_tag = ConsumerTag,
         {true, {?QOS_0, ?QOS_0}} ->
             {ok, PState};
         {Dup, {DeliveryQos, _SubQos} = Qos}     ->
-            send_client(
+            SendFun(
               #mqtt_frame{ fixed = #mqtt_frame_fixed{
                                      type = ?PUBLISH,
                                      qos  = DeliveryQos,
@@ -346,11 +364,12 @@ amqp_callback({#'basic.deliver'{ consumer_tag = ConsumerTag,
     end;
 
 amqp_callback(#'basic.ack'{ multiple = true, delivery_tag = Tag } = Ack,
-              PState = #proc_state{ unacked_pubs = UnackedPubs }) ->
+              PState = #proc_state{ unacked_pubs = UnackedPubs,
+                                    send_fun     = SendFun }) ->
     case gb_trees:size(UnackedPubs) > 0 andalso
          gb_trees:take_smallest(UnackedPubs) of
         {TagSmall, MsgId, UnackedPubs1} when TagSmall =< Tag ->
-            send_client(
+            SendFun(
               #mqtt_frame{ fixed    = #mqtt_frame_fixed{ type = ?PUBACK },
                            variable = #mqtt_frame_publish{ message_id = MsgId }},
               PState),
@@ -360,8 +379,9 @@ amqp_callback(#'basic.ack'{ multiple = true, delivery_tag = Tag } = Ack,
     end;
 
 amqp_callback(#'basic.ack'{ multiple = false, delivery_tag = Tag },
-              PState = #proc_state{ unacked_pubs = UnackedPubs }) ->
-    send_client(
+              PState = #proc_state{ unacked_pubs = UnackedPubs,
+                                    send_fun     = SendFun }) ->
+    SendFun(
       #mqtt_frame{ fixed    = #mqtt_frame_fixed{ type = ?PUBACK },
                    variable = #mqtt_frame_publish{
                                 message_id = gb_trees:get(
@@ -467,10 +487,15 @@ process_login(UserBin, PassBin, ProtoVersion,
     end.
 
 get_vhost_username(UserBin) ->
-    %% split at the last colon, disallowing colons in username
-    case re:split(UserBin, ":(?!.*?:)") of
-        [Vhost, UserName] -> {Vhost,  UserName};
-        [UserBin]         -> {rabbit_mqtt_util:env(vhost), UserBin}
+    Default = {rabbit_mqtt_util:env(vhost), UserBin},
+    case application:get_env(?APP, ignore_colons_in_username) of
+        {ok, true} -> Default;
+        _ ->
+            %% split at the last colon, disallowing colons in username
+            case re:split(UserBin, ":(?!.*?:)") of
+                [Vhost, UserName] -> {Vhost,  UserName};
+                [UserBin]         -> Default
+            end
     end.
 
 creds(User, Pass, SSLLoginName) ->
@@ -478,21 +503,34 @@ creds(User, Pass, SSLLoginName) ->
     DefaultPass   = rabbit_mqtt_util:env(default_pass),
     {ok, Anon}    = application:get_env(?APP, allow_anonymous),
     {ok, TLSAuth} = application:get_env(?APP, ssl_cert_login),
-    U = case {User =/= undefined, is_binary(DefaultUser),
-              Anon =:= true, (TLSAuth andalso SSLLoginName =/= none)} of
+    U = case {User =/= undefined,
+              is_binary(DefaultUser),
+              Anon =:= true,
+              (TLSAuth andalso SSLLoginName =/= none)} of
+             %% username provided
              {true,  _,    _,    _}     -> list_to_binary(User);
-             {false, _,    _,    true}  -> SSLLoginName;
+             %% anonymous, default user is configured, no TLS
              {false, true, true, false} -> DefaultUser;
+             %% no username provided, TLS certificate is present,
+             %% rabbitmq_mqtt.ssl_cert_login is true
+             {false, _,    _,    true}  -> SSLLoginName;
              _                          -> nocreds
         end,
     case U of
         nocreds ->
             nocreds;
         _ ->
-            case {Pass =/= undefined, is_binary(DefaultPass), Anon =:= true, SSLLoginName == U} of
+            case {Pass =/= undefined,
+                  is_binary(DefaultPass),
+                  Anon =:= true,
+                  TLSAuth} of
+                 %% password provided
                  {true,  _,    _,    _} -> {U, list_to_binary(Pass)};
+                 %% password not provided, TLS certificate is present,
+                 %% rabbitmq_mqtt.ssl_cert_login is true
+                 {false, _, _, true}    -> {U, none};
+                 %% anonymous, default password is configured
                  {false, true, true, _} -> {U, DefaultPass};
-                 {false, _,    _,    _} -> {U, none};
                  _                      -> {U, none}
             end
     end.
@@ -544,6 +582,10 @@ ensure_queue(Qos, #proc_state{ channels      = {Channel, _},
                 {QueueQ1,
                  #'queue.declare'{ queue       = QueueQ1,
                                    durable     = true,
+                                   %% Clean session means a transient connection,
+                                   %% translating into auto-delete.
+                                   %%
+                                   %% see rabbitmq/rabbitmq-mqtt#37
                                    auto_delete = CleanSess,
                                    arguments   = Qos1Args },
                  #'basic.consume'{ queue  = QueueQ1,

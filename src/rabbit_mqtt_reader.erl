@@ -11,25 +11,39 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2007-2015 Pivotal Software, Inc.  All rights reserved.
+%% Copyright (c) 2007-2016 Pivotal Software, Inc.  All rights reserved.
 %%
 
 -module(rabbit_mqtt_reader).
 -behaviour(gen_server2).
 
--export([start_link/0]).
+-export([start_link/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          code_change/3, terminate/2]).
 
 -export([conserve_resources/3, start_keepalive/2]).
+
+-export([ssl_login_name/1]).
 
 -include_lib("amqp_client/include/amqp_client.hrl").
 -include("rabbit_mqtt.hrl").
 
 %%----------------------------------------------------------------------------
 
-start_link() ->
-    gen_server2:start_link(?MODULE, [], []).
+start_link(KeepaliveSup, Ref, Sock) ->
+    Pid = proc_lib:spawn_link(?MODULE, init,
+                              [[KeepaliveSup, Ref, Sock]]),
+
+    %% In the event that somebody floods us with connections, the
+    %% reader processes can spew log events at error_logger faster
+    %% than it can keep up, causing its mailbox to grow unbounded
+    %% until we eat all the memory available and crash. So here is a
+    %% meaningless synchronous call to the underlying gen_event
+    %% mechanism. When it returns the mailbox is drained, and we
+    %% return to our caller to accept more connections.
+    gen_event:which_handlers(error_logger),
+
+    {ok, Pid}.
 
 conserve_resources(Pid, _, Conserve) ->
     Pid ! {conserve_resources, Conserve},
@@ -37,49 +51,42 @@ conserve_resources(Pid, _, Conserve) ->
 
 %%----------------------------------------------------------------------------
 
-init([]) ->
-    {ok, undefined, hibernate, {backoff, 1000, 1000, 10000}}.
+init([KeepaliveSup, Ref, Sock]) ->
+    process_flag(trap_exit, true),
+    rabbit_net:accept_ack(Ref, Sock),
+    case rabbit_net:connection_string(Sock, inbound) of
+        {ok, ConnStr} ->
+            log(debug, "MQTT accepting TCP connection ~p (~s)~n", [self(), ConnStr]),
+            rabbit_alarm:register(
+              self(), {?MODULE, conserve_resources, []}),
+            ProcessorState = rabbit_mqtt_processor:initial_state(Sock,ssl_login_name(Sock)),
+            erlang:send_after(rabbit_mqtt_util:env(connection_idle_timeout), self(), connection_idle_timeout),
+            gen_server2:enter_loop(?MODULE, [],
+             control_throttle(
+               #state{socket                 = Sock,
+                      conn_name              = ConnStr,
+                      await_recv             = false,
+                      connection_state       = connected,
+                      received_connect_frame = false,
+                      keepalive              = {none, none},
+                      keepalive_sup          = KeepaliveSup,
+                      conserve               = false,
+                      parse_state            = rabbit_mqtt_frame:initial_state(),
+                      proc_state             = ProcessorState }),
+             {backoff, 1000, 1000, 10000});
+        {network_error, Reason} ->
+            rabbit_net:fast_close(Sock),
+            terminate({shutdown, Reason}, undefined);
+        {error, enotconn} ->
+            rabbit_net:fast_close(Sock),
+            terminate(shutdown, undefined);
+        {error, Reason} ->
+            rabbit_net:fast_close(Sock),
+            terminate({network_error, Reason}, undefined)
+    end.
 
 handle_call(Msg, From, State) ->
     {stop, {mqtt_unexpected_call, Msg, From}, State}.
-
-handle_cast({go, Sock0, SockTransform, KeepaliveSup}, undefined) ->
-    process_flag(trap_exit, true),
-    case rabbit_net:connection_string(Sock0, inbound) of
-        {ok, ConnStr} ->
-            log(info, "accepting MQTT connection ~p (~s)~n", [self(), ConnStr]),
-            case SockTransform(Sock0) of
-                {ok, Sock} ->
-                    rabbit_alarm:register(
-                      self(), {?MODULE, conserve_resources, []}),
-                    ProcessorState = rabbit_mqtt_processor:initial_state(Sock,ssl_login_name(Sock)),
-                    erlang:send_after(rabbit_mqtt_util:env(connection_idle_timeout), self(), connection_idle_timeout),
-                    {noreply,
-                     control_throttle(
-                       #state{socket           = Sock,
-                              conn_name        = ConnStr,
-                              await_recv       = false,
-                              connection_state = connected,
-                              keepalive        = {none, none},
-                              keepalive_sup    = KeepaliveSup,
-                              conserve         = false,
-                              parse_state      = rabbit_mqtt_frame:initial_state(),
-                              proc_state       = ProcessorState }),
-                     hibernate};
-                {error, Reason} ->
-                    rabbit_net:fast_close(Sock0),
-                    {stop, {network_error, Reason, ConnStr}, undefined}
-            end;
-        {network_error, Reason} ->
-            rabbit_net:fast_close(Sock0),
-            {stop, {shutdown, Reason}, undefined};
-        {error, enotconn} ->
-            rabbit_net:fast_close(Sock0),
-            {stop, shutdown, undefined};
-        {error, Reason} ->
-            rabbit_net:fast_close(Sock0),
-            {stop, {network_error, Reason}, undefined}
-    end;
 
 handle_cast(duplicate_id,
             State = #state{ proc_state = PState,
@@ -222,6 +229,17 @@ ssl_login_name(Sock) ->
 
 %%----------------------------------------------------------------------------
 
+log_new_connection(#state{conn_name = ConnStr}) ->
+    log(info, "accepting MQTT connection ~p (~s)~n", [self(), ConnStr]).
+
+process_received_bytes(<<>>, State = #state{proc_state = ProcState,
+                                            received_connect_frame = false}) ->
+    MqttConn = ProcState#proc_state.connection,
+    case MqttConn of
+        undefined -> ok;
+        _         -> log_new_connection(State)
+    end,
+    {noreply, State#state{ received_connect_frame = true }, hibernate};
 process_received_bytes(<<>>, State) ->
     {noreply, State, hibernate};
 process_received_bytes(Bytes,
@@ -275,8 +293,13 @@ log(Level, Fmt, Args) -> rabbit_log:log(connection, Level, Fmt, Args).
 
 network_error(closed,
               State = #state{ conn_name  = ConnStr,
-                              proc_state = _PState }) ->
-    log(info, "MQTT detected network error for ~p: peer closed TCP connection ~n",
+                              proc_state = PState }) ->
+    MqttConn = PState#proc_state.connection,
+    log(case MqttConn of 
+            undefined  -> debug;
+            _          -> info
+        end, 
+        "MQTT detected network error for ~p: peer closed TCP connection~n",
         [ConnStr]),
     {stop, {shutdown, conn_closed}, State};
 
