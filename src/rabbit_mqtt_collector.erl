@@ -23,7 +23,8 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
--record(state, {client_ids}).
+-record(state, {client_ids,
+                pids}).
 
 -define(SERVER, ?MODULE).
 
@@ -44,13 +45,14 @@ unregister(ClientId, Pid) ->
 %%----------------------------------------------------------------------------
 
 init([]) ->
-    {ok, #state{client_ids = dict:new()}}. % clientid -> {pid, monitor}
+    {ok, #state{client_ids = dict:new(),
+                pids = dict:new()}}. % clientid -> {pid, monitor}
 
 %%--------------------------------------------------------------------------
 
 
 handle_call({register, ClientId, Pid}, _From,
-            State = #state{client_ids = Ids}) ->
+            State = #state{client_ids = Ids, pids = Pids}) ->
     Ids1 = case dict:find(ClientId, Ids) of
                {ok, {OldPid, MRef}} when Pid =/= OldPid ->
                    catch gen_server2:cast(OldPid, duplicate_id),
@@ -60,15 +62,16 @@ handle_call({register, ClientId, Pid}, _From,
                    Ids
            end,
     Ids2 = dict:store(ClientId, {Pid, erlang:monitor(process, Pid)}, Ids1),
-    {reply, ok, State#state{client_ids = Ids2}};
+    Pids2 = dict:store(Pid, ClientId, Pids),
+    {reply, ok, State#state{client_ids = Ids2, pids = Pids2}};
 
-handle_call({unregister, ClientId, Pid}, _From, State = #state{client_ids = Ids}) ->
+handle_call({unregister, ClientId, Pid}, _From, State = #state{client_ids = Ids, pids = Pids}) ->
     {Reply, Ids1} = case dict:find(ClientId, Ids) of
                         {ok, {Pid, MRef}} -> erlang:demonitor(MRef),
                                              {ok, dict:erase(ClientId, Ids)};
                         _                 -> {ok, Ids}
                     end,
-    {reply, Reply, State#state{ client_ids = Ids1 }};
+    {reply, Reply, State#state{ client_ids = Ids1, pids = dict:erase(Pid, Pids)}};
 
 handle_call(Msg, _From, State) ->
     {stop, {unhandled_call, Msg}, State}.
@@ -92,16 +95,22 @@ handle_info({'EXIT', _, {shutdown, closed}}, State) ->
     {stop, {shutdown, closed}, State};
 
 handle_info({'DOWN', MRef, process, DownPid, _Reason},
-            State = #state{client_ids = Ids}) ->
-    Ids1 = dict:filter(fun (ClientId, {Pid, M})
-                           when Pid =:= DownPid, MRef =:= M ->
-                               rabbit_log:warning("MQTT disconnect from ~p~n",
-                                                  [ClientId]),
-                               false;
-                           (_, _) ->
-                               true
-                       end, Ids),
-    {noreply, State #state{ client_ids = Ids1 }}.
+            State = #state{client_ids = Ids, pids = Pids}) ->
+    State2 = case dict:find(DownPid, Pids) of
+                 {ok, ClientId} ->
+                     Ids1 = case dict:find(ClientId, Ids) of
+                                {ok, {OldPid, M}} when OldPid =:= DownPid, MRef =:= M ->
+                                    rabbit_log:warning("MQTT disconnect from ~p~n",
+                                                       [ClientId]),
+                                    dict:erase(ClientId, Ids);
+                                error ->
+                                    Ids
+                            end,
+                    #state{client_ids = Ids1, pids = dict:erase(DownPid, Pids)};
+                 error -> State
+             end,
+    {noreply, State2}.
+
 
 terminate(_Reason, _State) ->
     ok.
