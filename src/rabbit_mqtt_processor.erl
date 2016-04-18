@@ -184,6 +184,7 @@ process_request(?SUBSCRIBE,
                 #proc_state{channels = {Channel, _},
                             exchange = Exchange,
                             retainer_pid = RPid,
+                            message_id = ProcMessageId,
                             send_fun = SendFun } = PState0) ->
     check_subscribe_or_die(Topics, fun() ->
         {QosResponse, PState1} =
@@ -216,7 +217,7 @@ process_request(?SUBSCRIBE,
                             {true, X} -> Acc + X;
                             false     -> Acc
                           end
-                        end, MessageId, Topics),
+                        end, ProcMessageId, Topics),
         {ok, PState1#proc_state{message_id = N}}
     end, PState0);
 
@@ -421,14 +422,8 @@ maybe_clean_sess(PState = #proc_state { clean_sess = true,
                                         client_id  = ClientId }) ->
     {Queue0, Queue1} = rabbit_mqtt_util:subcription_queue_name(ClientId),
     {ok, Channel} = amqp_connection:open_channel(Conn),
-    try amqp_channel:call(Channel, #'queue.delete'{ queue = Queue0 })
-    catch
-        exit:_Error0 -> ok
-    end,
-    try amqp_channel:call(Channel, #'queue.delete'{ queue = Queue1 })
-    catch
-        exit:_Error1 -> ok
-    end,
+    catch amqp_channel:call(Channel, #'queue.delete'{ queue = Queue0 }),
+    catch amqp_channel:call(Channel, #'queue.delete'{ queue = Queue1 }),
     amqp_channel:close(Channel),
     PState.
 
