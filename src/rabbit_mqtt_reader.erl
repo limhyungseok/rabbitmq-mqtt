@@ -45,7 +45,7 @@ start_link(KeepaliveSup, Ref, Sock) ->
 
     {ok, Pid}.
 
-conserve_resources(Pid, _, Conserve) ->
+conserve_resources(Pid, _, {_, Conserve, _}) ->
     Pid ! {conserve_resources, Conserve},
     ok.
 
@@ -62,7 +62,8 @@ init([KeepaliveSup, Ref, Sock]) ->
             ProcessorState = rabbit_mqtt_processor:initial_state(Sock,ssl_login_name(Sock)),
             erlang:send_after(rabbit_mqtt_util:env(connection_idle_timeout), self(), connection_idle_timeout),
             gen_server2:enter_loop(?MODULE, [],
-             control_throttle(
+             rabbit_event:init_stats_timer(
+              control_throttle(
                #state{socket                 = Sock,
                       conn_name              = ConnStr,
                       await_recv             = false,
@@ -72,7 +73,7 @@ init([KeepaliveSup, Ref, Sock]) ->
                       keepalive_sup          = KeepaliveSup,
                       conserve               = false,
                       parse_state            = rabbit_mqtt_frame:initial_state(),
-                      proc_state             = ProcessorState }),
+                      proc_state             = ProcessorState }), #state.stats_timer),
              {backoff, 1000, 1000, 10000});
         {network_error, Reason} ->
             rabbit_net:fast_close(Sock),
@@ -127,6 +128,10 @@ handle_info({inet_reply, _Ref, ok}, State) ->
     {noreply, State, hibernate};
 
 handle_info({inet_async, Sock, _Ref, {ok, Data}},
+            State = #state{ socket = Sock, connection_state = blocked }) ->
+    {noreply, State#state{ deferred_recv = Data }, hibernate};
+
+handle_info({inet_async, Sock, _Ref, {ok, Data}},
             State = #state{ socket = Sock, connection_state = ConnectionState}) ->
     NextConnectionState = 
         case ConnectionState of
@@ -144,11 +149,12 @@ handle_info({inet_reply, _Sock, {error, Reason}}, State = #state {}) ->
     network_error(Reason, State);
 
 handle_info({conserve_resources, Conserve}, State) ->
-    {noreply, control_throttle(State #state{ conserve = Conserve }), hibernate};
+    maybe_process_deferred_recv(
+        control_throttle(State #state{ conserve = Conserve }));
 
 handle_info({bump_credit, Msg}, State) ->
     credit_flow:handle_bump_msg(Msg),
-    {noreply, control_throttle(State), hibernate};
+    maybe_process_deferred_recv(control_throttle(State));
 
 handle_info({start_keepalives, Keepalive},
             State = #state { keepalive_sup = KeepaliveSup, socket = Sock }) ->
@@ -165,50 +171,57 @@ handle_info(keepalive_timeout, State = #state {conn_name = ConnStr,
     log(error, "closing MQTT connection ~p (keepalive timeout) ~n", [ConnStr]),
     {stop, {shutdown, keepalive_timeout}, State};
 
+handle_info(emit_stats, State) ->
+    {noreply, emit_stats(State), hibernate};
+
 handle_info(Msg, State) ->
     {stop, {mqtt_unexpected_msg, Msg}, State}.
 
-terminate({network_error, {ssl_upgrade_error, closed}, ConnStr}, _State) ->
+terminate(Reason, State) ->
+    maybe_emit_stats(State),
+    do_terminate(Reason, State).
+
+do_terminate({network_error, {ssl_upgrade_error, closed}, ConnStr}, _State) ->
     log(error, "MQTT detected TLS upgrade error on ~s: connection closed~n",
        [ConnStr]);
 
-terminate({network_error,
+do_terminate({network_error,
            {ssl_upgrade_error,
             {tls_alert, "handshake failure"}}, ConnStr}, _State) ->
     log(error, "MQTT detected TLS upgrade error on ~s: handshake failure~n",
        [ConnStr]);
 
-terminate({network_error,
+do_terminate({network_error,
            {ssl_upgrade_error,
             {tls_alert, "unknown ca"}}, ConnStr}, _State) ->
     log(error, "MQTT detected TLS certificate verification error on ~s: alert 'unknown CA'~n",
        [ConnStr]);
 
-terminate({network_error,
+do_terminate({network_error,
            {ssl_upgrade_error,
             {tls_alert, Alert}}, ConnStr}, _State) ->
     log(error, "MQTT detected TLS upgrade error on ~s: alert ~s~n",
        [ConnStr, Alert]);
 
-terminate({network_error, {ssl_upgrade_error, Reason}, ConnStr}, _State) ->
+do_terminate({network_error, {ssl_upgrade_error, Reason}, ConnStr}, _State) ->
     log(error, "MQTT detected TLS upgrade error on ~s: ~p~n",
         [ConnStr, Reason]);
 
-terminate({network_error, Reason, ConnStr}, _State) ->
+do_terminate({network_error, Reason, ConnStr}, _State) ->
     log(error, "MQTT detected network error on ~s: ~p~n",
         [ConnStr, Reason]);
 
-terminate({network_error, Reason}, _State) ->
+do_terminate({network_error, Reason}, _State) ->
     log(error, "MQTT detected network error: ~p~n", [Reason]);
 
-terminate(normal, #state{proc_state = ProcState,
+do_terminate(normal, #state{proc_state = ProcState,
                          conn_name  = ConnName}) ->
     rabbit_mqtt_processor:close_connection_and_relay(ProcState),
     log(info, "closing MQTT connection ~p (~s)~n", [self(), ConnName]),
     ok;
 
-terminate(Reason, #state{proc_state = ProcState,
-                          conn_name  = ConnName}) ->
+do_terminate(Reason, #state{proc_state = ProcState,
+                            conn_name  = ConnName}) ->
     case Reason of
         {shutdown,duplicate_id} ->
             rabbit_mqtt_processor:close_connection(ProcState);
@@ -244,9 +257,9 @@ process_received_bytes(<<>>, State = #state{proc_state = ProcState,
         undefined -> ok;
         _         -> log_new_connection(State)
     end,
-    {noreply, State#state{ received_connect_frame = true }, hibernate};
+    {noreply, ensure_stats_timer(State#state{ received_connect_frame = true }), hibernate};
 process_received_bytes(<<>>, State) ->
-    {noreply, State, hibernate};
+    {noreply, ensure_stats_timer(State), hibernate};
 process_received_bytes(Bytes,
                        State = #state{ parse_state = ParseState,
                                        proc_state  = ProcState,
@@ -254,16 +267,17 @@ process_received_bytes(Bytes,
     case rabbit_mqtt_frame:parse(Bytes, ParseState) of
         {more, ParseState1} ->
             {noreply,
-             control_throttle( State #state{ parse_state = ParseState1 }),
+             ensure_stats_timer(control_throttle( State #state{ parse_state = ParseState1 })),
              hibernate};
         {ok, Frame, Rest} ->
             case rabbit_mqtt_processor:process_frame(Frame, ProcState) of
-                {ok, ProcState1} ->
+                {ok, ProcState1, ConnPid} ->
                     PS = rabbit_mqtt_frame:initial_state(),
                     process_received_bytes(
                       Rest,
                       State #state{ parse_state = PS,
-                                    proc_state = ProcState1 });
+                                    proc_state = ProcState1,
+                                    connection = ConnPid });
                 {error, Reason, ProcState1} ->
                     log(info, "MQTT protocol error ~p for connection ~p~n",
                         [Reason, ConnStr]),
@@ -300,10 +314,10 @@ network_error(closed,
               State = #state{ conn_name  = ConnStr,
                               proc_state = PState }) ->
     MqttConn = PState#proc_state.connection,
-    log(case MqttConn of 
+    log(case MqttConn of
             undefined  -> debug;
             _          -> info
-        end, 
+        end,
         "MQTT detected network error for ~p: peer closed TCP connection~n",
         [ConnStr]),
     {stop, {shutdown, conn_closed}, State};
@@ -315,6 +329,8 @@ network_error(Reason,
     {stop, {shutdown, conn_closed}, State}.
 
 run_socket(State = #state{ connection_state = blocked }) ->
+    State;
+run_socket(State = #state{ deferred_recv = Data }) when Data =/= undefined ->
     State;
 run_socket(State = #state{ await_recv = true }) ->
     State;
@@ -334,3 +350,27 @@ control_throttle(State = #state{ connection_state = Flow,
                                                 connection_state = running });
         {_,            _} -> run_socket(State)
     end.
+
+maybe_process_deferred_recv(State = #state{ deferred_recv = undefined }) ->
+    {noreply, State, hibernate};
+maybe_process_deferred_recv(State = #state{ deferred_recv = Data, socket = Sock }) ->
+    handle_info({inet_async, Sock, noref, {ok, Data}},
+                State#state{ deferred_recv = undefined }).
+
+maybe_emit_stats(State) ->
+    rabbit_event:if_enabled(State, #state.stats_timer,
+                            fun() -> emit_stats(State) end).
+
+emit_stats(State=#state{socket=Sock, connection_state=ConnState, connection=Conn}) ->
+    SockInfos = case rabbit_net:getstat(Sock,
+            [recv_oct, recv_cnt, send_oct, send_cnt, send_pend]) of
+        {ok,    SI} -> SI;
+        {error,  _} -> []
+    end,
+    Infos = [{pid, Conn}, {state, ConnState}|SockInfos],
+    rabbit_event:notify(connection_stats, Infos),
+    State1 = rabbit_event:reset_stats_timer(State, #state.stats_timer),
+    ensure_stats_timer(State1).
+
+ensure_stats_timer(State = #state{}) ->
+    rabbit_event:ensure_stats_timer(State, #state.stats_timer, emit_stats).
