@@ -20,13 +20,16 @@
 -record(state,      { socket,
                       conn_name,
                       await_recv,
+                      deferred_recv,
                       received_connect_frame,
                       connection_state,
                       keepalive,
                       keepalive_sup,
                       conserve,
                       parse_state,
-                      proc_state }).
+                      proc_state,
+                      connection,
+                      stats_timer }).
 
 %% processor state
 -record(proc_state, { socket,
@@ -42,6 +45,7 @@
                       channels,
                       connection,
                       exchange,
+                      adapter_info,
                       ssl_login_name,
                       %% Retained messages handler. See rabbit_mqtt_retainer_sup
                       %% and rabbit_mqtt_retainer.
