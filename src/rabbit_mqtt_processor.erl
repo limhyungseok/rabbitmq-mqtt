@@ -219,8 +219,6 @@ process_request(?SUBSCRIBE,
                             PState1 #proc_state{subscriptions =
                                                 dict:append(TopicName, SupportedQos, Subs)}}
                        end, {[], PState0}, Topics),
-        #proc_state{subscriptions = Subscriptions} = PState1,
-        rabbit_log:log(mqtt_packet, debug, "~w ~1024p", [self(), Subscriptions]),
         SendFun(#mqtt_frame{fixed    = #mqtt_frame_fixed{type = ?SUBACK},
                             variable = #mqtt_frame_suback{
                                         message_id = MessageId,

@@ -61,9 +61,8 @@ handle_call({register, ClientId, Pid}, _From,
                error ->
                    Ids
            end,
-    Ids2 = dict:store(ClientId, {Pid, erlang:monitor(process, Pid)}, Ids1),
-    Pids2 = dict:store(Pid, ClientId, Pids),
-    {reply, ok, State#state{client_ids = Ids2, pids = Pids2}};
+    {reply, ok, State#state{client_ids = dict:store(ClientId, {Pid, erlang:monitor(process, Pid)}, Ids1), 
+                            pids = dict:store(Pid, ClientId, Pids)}};
 
 handle_call({unregister, ClientId, Pid}, _From, State = #state{client_ids = Ids, pids = Pids}) ->
     {Reply, Ids1} = case dict:find(ClientId, Ids) of
