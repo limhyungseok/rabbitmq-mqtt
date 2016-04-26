@@ -639,9 +639,13 @@ http_relay(Path, Request, HttpOptions) ->
 
 relay_client_status(ClientId, Username, Status) ->
     [{path, Path}, {conn_timeout, ConnTimeout}, {timeout, Timeout}] = rabbit_mqtt_util:env(relay_status_backend_http),
-    Request = [{username, Username},{clientId, ClientId}, {status, Status}],
-    HttpOptions = [{timeout, Timeout},{connect_timeout, ConnTimeout},{version, "HTTP/1.0"}],
-    spawn(rabbit_mqtt_processor, http_relay, [Path, Request, HttpOptions]).
+    case Path of
+        "" -> ok;
+        _  -> Request = [{username, Username},{clientId, ClientId}, {status, Status}],
+              HttpOptions = [{timeout, Timeout},{connect_timeout, ConnTimeout},{version, "HTTP/1.0"}],
+              spawn(rabbit_mqtt_processor, http_relay, [Path, Request, HttpOptions]),
+              ok
+    end.
 
 
 amqp_pub(undefined, PState) ->
