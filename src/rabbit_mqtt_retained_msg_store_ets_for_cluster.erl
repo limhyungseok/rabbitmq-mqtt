@@ -64,7 +64,7 @@ recover(Dir, VHost) ->
   resource_discovery:add_target_resource_type(?RESOURCE_TYPE),
   resource_discovery:sync_resources(),
   Pids = resource_discovery:get_resources(?RESOURCE_TYPE),
-  rabbit_log:info("MQTT retained message pids: ~p", [Pids]),
+  rabbit_log:info("MQTT retained message pids: ~w", [Pids]),
   internal_recover(Dir, VHost, lists:delete(self(), Pids)).
 
 multi_cast([], _Msg) -> ok;
