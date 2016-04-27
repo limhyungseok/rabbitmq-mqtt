@@ -65,11 +65,11 @@ packet_log(#mqtt_frame{fixed = Fixed,
                        variable = Variable}, 
            #proc_state{client_id = ClientId,
                        auth_state = #auth_state{username = Username}}) ->
-    rabbit_log:log(mqtt_packet, debug, "~w ~w ~w ~p ~p", [self(), Fixed, Variable, ClientId, Username]);
+    rabbit_log:log(mqtt_packet, debug, "~w ~w ~p ~p", [Fixed, Variable, ClientId, Username]);
 packet_log(#mqtt_frame{fixed = Fixed,
                        variable = Variable}, 
-           _PState) -> rabbit_log:log(mqtt_packet, debug, "~w ~w ~p", [self(), Fixed, Variable]);
-packet_log(Frame, _PState) -> rabbit_log:log(mqtt_packet, debug, "~w ~p", [self(), Frame]).
+           _PState) -> rabbit_log:log(mqtt_packet, debug, "~w ~w", [Fixed, Variable]);
+packet_log(Frame, _PState) -> rabbit_log:log(mqtt_packet, debug, "~w", [Frame]).
 
 process_frame(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = Type }},
               PState = #proc_state{ connection = undefined } )
