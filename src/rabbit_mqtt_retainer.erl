@@ -86,6 +86,11 @@ handle_cast({clear, Topic},
     ok = Mod:delete(Topic, Store),
     {noreply, State}.
 
+handle_call({sync}, From, 
+            State = #retainer_state{store = Store, store_mod = Mod}) ->
+    rabbit_log:info("MQTT retained message sync from:~w", [From]),
+    {reply, Mod:all(Store), State};
+
 handle_call({fetch, Topic}, _From,
     State = #retainer_state{store = Store, store_mod = Mod}) ->
     Reply = case Mod:lookup(Topic, Store) of
