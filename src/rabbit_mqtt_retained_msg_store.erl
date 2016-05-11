@@ -20,6 +20,7 @@
 
 behaviour_info(callbacks) ->
     [{new,       2},
+     {new,       3},
      {recover,   2},
      {insert,    3},
      {lookup,    2},

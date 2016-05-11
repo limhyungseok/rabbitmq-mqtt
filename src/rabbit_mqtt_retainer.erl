@@ -27,9 +27,11 @@
 
 -define(SERVER, ?MODULE).
 -define(TIMEOUT, 30000).
+-define(RESOURCE_TYPE, retained_msg).
 
 -record(retainer_state, {store_mod,
-                         store}).
+                         store,
+                         sync}).
 
 -ifdef(use_specs).
 
@@ -46,7 +48,9 @@ start_link(RetainStoreMod, VHost) ->
     gen_server2:start_link(?MODULE, [RetainStoreMod, VHost], []).
 
 retain(Pid, Topic, Msg = #mqtt_msg{retain = true}) ->
-    gen_server2:cast(Pid, {retain, Topic, Msg});
+    Message = {retain, Topic, Msg},
+    relay_others(Pid, Message),
+    gen_server2:cast(Pid, Message);
 
 retain(_Pid, _Topic, Msg = #mqtt_msg{retain = false}) ->
     throw({error, {retain_is_false, Msg}}).
@@ -55,17 +59,47 @@ fetch(Pid, Topic) ->
     gen_server2:call(Pid, {fetch, Topic}, ?TIMEOUT).
 
 clear(Pid, Topic) ->
-    gen_server2:cast(Pid, {clear, Topic}).
+    Message = {clear, Topic},
+    relay_others(Pid, Message),
+    gen_server2:cast(Pid, Message).
+
+relay_others(ExceptPid, Message) ->
+    case rabbit_mqtt_util:env(retained_sync_cluster) of
+        true -> 
+            lists:foreach(fun (Pid) 
+                                when ExceptPid =:= Pid -> void ;
+                                (Pid) -> gen_server2:cast(Pid, Message)
+                          end, resource_discovery:get_resources(?RESOURCE_TYPE));
+        false -> void
+    end.
 
 %%----------------------------------------------------------------------------
 
 init([StoreMod, VHost]) ->
     process_flag(trap_exit, true),
-    State = case StoreMod:recover(store_dir(), VHost) of
-                {ok, Store} -> #retainer_state{store = Store,
-                                               store_mod = StoreMod};
-                {error, _}  -> #retainer_state{store = StoreMod:new(store_dir(), VHost),
-                                               store_mod = StoreMod}
+    Sync = rabbit_mqtt_util:env(retained_sync_cluster),
+    Recover = case Sync of
+                true ->
+                    resource_discovery:add_local_resource_tuple({?RESOURCE_TYPE, self()}),
+                    resource_discovery:add_target_resource_type(?RESOURCE_TYPE),
+                    resource_discovery:sync_resources(),
+                    case sync_module(lists:delete(self(), resource_discovery:get_resources(?RESOURCE_TYPE)), 
+                                     StoreMod, VHost) of 
+                        {ok, Store} -> Store;
+                        _ -> true
+                    end;
+                false -> true
+              end,
+    State = case Recover of 
+                true -> case StoreMod:recover(store_dir(), VHost) of
+                            {ok, Store0} -> #retainer_state{store = Store0,
+                                                            store_mod = StoreMod,
+                                                            sync = Sync};
+                            {error, _}  -> #retainer_state{store = StoreMod:new(store_dir(), VHost),
+                                                           store_mod = StoreMod,
+                                                           sync = Sync}
+                        end;
+                Store1 -> #retainer_state{store = Store1, store_mod = StoreMod, sync = Sync}
             end,
     {ok, State}.
 
@@ -73,6 +107,18 @@ store_module() ->
     case application:get_env(rabbitmq_mqtt, retained_message_store) of
         {ok, Mod} -> Mod;
         undefined -> undefined
+    end.
+
+sync_module([], _StoreMod, _VHost) -> {error, "can't sync retained store"};
+sync_module([Pid | Tails], StoreMod, VHost) ->
+    try
+        Messages = gen_server2:call(Pid, {sync}, rabbit_mqtt_util:env(retained_sync_timeout)),
+        Store = StoreMod:new(store_dir(), VHost, Messages),
+        {ok, Store}
+    catch
+        _:Reason ->
+            rabbit_log:error("MQTT retained message sync error: ~w", [Reason]),
+            sync_module(Tails, StoreMod, VHost)
     end.
 
 %%----------------------------------------------------------------------------
@@ -108,7 +154,13 @@ handle_info(Info, State) ->
 store_dir() ->
     rabbit_mnesia:dir().
 
-terminate(_Reason, #retainer_state{store = Store, store_mod = Mod}) ->
+terminate(_Reason, #retainer_state{store = Store, store_mod = Mod, sync = true}) ->
+    resource_discovery:delete_local_resource_tuple({?RESOURCE_TYPE, self()}),
+    resource_discovery:trade_resources(),
+    Mod:terminate(Store),
+    ok;
+
+terminate(_Reason, #retainer_state{store = Store, store_mod = Mod, sync = false}) ->
     Mod:terminate(Store),
     ok.
 
