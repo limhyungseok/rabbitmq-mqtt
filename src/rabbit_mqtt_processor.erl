@@ -736,7 +736,10 @@ close_connection(PState = #proc_state{ connection = Connection,
         _         -> ok = rabbit_mqtt_collector:unregister(ClientId, self())
     end,
     %% ignore noproc or other exceptions to avoid debris
-    catch amqp_connection:close(Connection),
+    try amqp_connection:close(Connection)
+    catch
+        _:Reason -> rabbit_log:error("~p ~p", [PState, Reason])
+    end,
     PState #proc_state{ channels   = {undefined, undefined},
                         connection = undefined }.
 
