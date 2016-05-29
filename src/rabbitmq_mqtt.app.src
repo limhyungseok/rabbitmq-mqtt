@@ -26,5 +26,6 @@
                                       {conn_timeout, 1000},
                                       {timeout, 3000}]},
          {connection_idle_timeout, 5000},
-         {retained_sync_timeout, 5000}]},
+         {retained_sync_timeout, 5000},
+         {retained_sync_cluster, false}]},
   {applications, [kernel, stdlib, rabbit, amqp_client, mochiweb, resource_discovery]}]}.

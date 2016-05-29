@@ -19,7 +19,7 @@
 -behaviour(rabbit_mqtt_retained_msg_store).
 -include("rabbit_mqtt.hrl").
 
--export([new/2, recover/2, insert/3, lookup/2, delete/2, terminate/1, all/1]).
+-export([new/2, new/3, recover/2, insert/3, lookup/2, delete/2, terminate/1, all/1]).
 
 -record(store_state, {
   %% DETS table name
@@ -29,6 +29,11 @@
 
 new(Dir, VHost) ->
   Tid = open_table(Dir, VHost),
+  #store_state{table = Tid}.
+
+new(Dir, VHost, Messages) ->
+  #store_state{table = Tid} = new(Dir, VHost),
+  dets:insert(Tid, Messages),
   #store_state{table = Tid}.
 
 recover(Dir, VHost) ->
