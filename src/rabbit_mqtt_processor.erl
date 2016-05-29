@@ -115,14 +115,19 @@ process_request(?CONNECT,
                                  RetainerPid =
                                    rabbit_mqtt_retainer_sup:child_for_vhost(VHost),
                                 link(Conn),
+                                rabbit_log:log(mqtt_packet, debug, "amqp_connection:open_channel(Conn)", []),
                                 {ok, Ch} = amqp_connection:open_channel(Conn),
                                 link(Ch),
+                                rabbit_log:log(mqtt_packet, debug, "amqp_channel:enable_delivery_flow_control(Ch)", []),
                                 amqp_channel:enable_delivery_flow_control(Ch),
+                                rabbit_log:log(mqtt_packet, debug, "rabbit_mqtt_collector:register", []),
                                 ok = rabbit_mqtt_collector:register(
                                   ClientId, self()),
                                 Prefetch = rabbit_mqtt_util:env(prefetch),
+                                rabbit_log:log(mqtt_packet, debug, "amqp_channel:call(Ch, #'basic.qos'{prefetch_count = Prefetch}", []),
                                 #'basic.qos_ok'{} = amqp_channel:call(
                                   Ch, #'basic.qos'{prefetch_count = Prefetch}),
+                                rabbit_log:log(mqtt_packet, debug, "rabbit_mqtt_reader:start_keepalive(self(), Keepalive)", []),
                                 rabbit_mqtt_reader:start_keepalive(self(), Keepalive),
                                 {?CONNACK_ACCEPT,
                                  maybe_clean_sess(
@@ -428,7 +433,9 @@ delivery_qos(Tag, Headers,   #proc_state{ consumer_tags = {_, Tag} }) ->
     end.
 
 maybe_clean_sess(PState = #proc_state { clean_sess = false }) ->
+    rabbit_log:log(mqtt_packet, debug, "ensure_queue(?QOS_0, PState)", []),
     {_Queue0, PState0} = ensure_queue(?QOS_0, PState),
+    rabbit_log:log(mqtt_packet, debug, "ensure_queue(?QOS_1, PState)", []),
     {_Queue1, PState1} = ensure_queue(?QOS_1, PState0),
     PState1;
 maybe_clean_sess(PState = #proc_state { clean_sess = true,
@@ -436,7 +443,9 @@ maybe_clean_sess(PState = #proc_state { clean_sess = true,
                                         client_id  = ClientId }) ->
     {Queue0, Queue1} = rabbit_mqtt_util:subcription_queue_name(ClientId),
     {ok, Channel} = amqp_connection:open_channel(Conn),
+    rabbit_log:log(mqtt_packet, debug, "amqp_channel:call(Channel, #'queue.delete'{ queue = Queue0 }", []),
     catch amqp_channel:call(Channel, #'queue.delete'{ queue = Queue0 }),
+    rabbit_log:log(mqtt_packet, debug, "amqp_channel:call(Channel, #'queue.delete'{ queue = Queue1 }", []),
     catch amqp_channel:call(Channel, #'queue.delete'{ queue = Queue1 }),
     amqp_channel:close(Channel),
     PState.
