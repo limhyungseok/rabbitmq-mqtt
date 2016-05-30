@@ -20,11 +20,13 @@
 
 behaviour_info(callbacks) ->
     [{new,       2},
+     {new,       3},
      {recover,   2},
      {insert,    3},
      {lookup,    2},
      {delete,    2},
-     {terminate, 1}];
+     {terminate, 1},
+     {all,       1}];
 behaviour_info(_Other) ->
     undefined.
 

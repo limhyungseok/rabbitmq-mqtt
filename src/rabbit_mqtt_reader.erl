@@ -60,13 +60,14 @@ init([KeepaliveSup, Ref, Sock]) ->
             rabbit_alarm:register(
               self(), {?MODULE, conserve_resources, []}),
             ProcessorState = rabbit_mqtt_processor:initial_state(Sock,ssl_login_name(Sock)),
+            erlang:send_after(rabbit_mqtt_util:env(connection_idle_timeout), self(), connection_idle_timeout),
             gen_server2:enter_loop(?MODULE, [],
              rabbit_event:init_stats_timer(
               control_throttle(
                #state{socket                 = Sock,
                       conn_name              = ConnStr,
                       await_recv             = false,
-                      connection_state       = running,
+                      connection_state       = connected,
                       received_connect_frame = false,
                       keepalive              = {none, none},
                       keepalive_sup          = KeepaliveSup,
@@ -123,9 +124,15 @@ handle_info({inet_async, Sock, _Ref, {ok, Data}},
     {noreply, State#state{ deferred_recv = Data }, hibernate};
 
 handle_info({inet_async, Sock, _Ref, {ok, Data}},
-            State = #state{ socket = Sock, connection_state = running }) ->
+            State = #state{ socket = Sock, connection_state = ConnectionState }) ->
+    NextConnectionState = 
+        case ConnectionState of
+            connected -> running ;
+            _ -> ConnectionState
+        end,
     process_received_bytes(
-      Data, control_throttle(State #state{ await_recv = false }));
+      Data, control_throttle(State #state{ await_recv = false,
+                                           connection_state = NextConnectionState }));
 
 handle_info({inet_async, _Sock, _Ref, {error, Reason}}, State = #state {}) ->
     network_error(Reason, State);
@@ -152,12 +159,20 @@ handle_info({start_keepalives, Keepalive},
     {noreply, State #state { keepalive = Heartbeater }};
 
 handle_info(keepalive_timeout, State = #state {conn_name = ConnStr,
-                                               proc_state = PState}) ->
+                                               proc_state = _PState}) ->
     log(error, "closing MQTT connection ~p (keepalive timeout)~n", [ConnStr]),
-    send_will_and_terminate(PState, {shutdown, keepalive_timeout}, State);
+    {stop, {shutdown, keepalive_timeout}, State};
 
 handle_info(emit_stats, State) ->
     {noreply, emit_stats(State), hibernate};
+
+handle_info(connection_idle_timeout, State = #state{connection_state = ConnectionState}) ->
+    case ConnectionState of
+        running ->
+            {noreply, State, hibernate};
+        _ ->
+            {stop, {connection_idle_timeout, "connection_idle_timeout"}, State}
+    end;
 
 handle_info(Msg, State) ->
     {stop, {mqtt_unexpected_msg, Msg}, State}.
@@ -201,12 +216,19 @@ do_terminate({network_error, Reason}, _State) ->
 
 do_terminate(normal, #state{proc_state = ProcState,
                          conn_name  = ConnName}) ->
-    rabbit_mqtt_processor:close_connection(ProcState),
+    rabbit_mqtt_processor:close_connection_and_relay(ProcState),
     log(info, "closing MQTT connection ~p (~s)~n", [self(), ConnName]),
     ok;
 
-do_terminate(_Reason, #state{proc_state = ProcState}) ->
-    rabbit_mqtt_processor:close_connection(ProcState),
+do_terminate(Reason, #state{proc_state = ProcState,
+                            conn_name  = ConnName}) ->
+    case Reason of
+        {shutdown,duplicate_id} ->
+            rabbit_mqtt_processor:close_connection(ProcState);
+        _ ->
+            rabbit_mqtt_processor:close_connection_and_relay(ProcState)
+    end,
+    log(error, "closing MQTT connection ~p (~s) Reason:~p ~n", [self(), ConnName, Reason]),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -288,14 +310,6 @@ pstate(State = #state {}, PState = #proc_state{}) ->
 
 log(Level, Fmt, Args) -> rabbit_log:log(connection, Level, Fmt, Args).
 
-send_will_and_terminate(PState, State) ->
-    send_will_and_terminate(PState, {shutdown, conn_closed}, State).
-
-send_will_and_terminate(PState, Reason, State) ->
-    rabbit_mqtt_processor:send_will(PState),
-    % todo: flush channel after publish
-    {stop, Reason, State}.
-
 network_error(closed,
               State = #state{ conn_name  = ConnStr,
                               proc_state = PState }) ->
@@ -306,13 +320,13 @@ network_error(closed,
         end,
         "MQTT detected network error for ~p: peer closed TCP connection~n",
         [ConnStr]),
-    send_will_and_terminate(PState, State);
+    {stop, {shutdown, conn_closed}, State};
 
 network_error(Reason,
               State = #state{ conn_name  = ConnStr,
-                              proc_state = PState }) ->
+                              proc_state = _PState }) ->
     log(info, "MQTT detected network error for ~p: ~p~n", [ConnStr, Reason]),
-    send_will_and_terminate(PState, State).
+    {stop, {shutdown, conn_closed}, State}.
 
 run_socket(State = #state{ connection_state = blocked }) ->
     State;
@@ -328,6 +342,9 @@ control_throttle(State = #state{ connection_state = Flow,
                                  conserve         = Conserve }) ->
     case {Flow, Conserve orelse credit_flow:blocked()} of
         {running,   true} -> ok = rabbit_heartbeat:pause_monitor(
+                                    State#state.keepalive),
+                             State #state{ connection_state = blocked };
+        {connected,   true} -> ok = rabbit_heartbeat:pause_monitor(
                                     State#state.keepalive),
                              State #state{ connection_state = blocked };
         {blocked,  false} -> ok = rabbit_heartbeat:resume_monitor(
@@ -348,12 +365,16 @@ maybe_emit_stats(State) ->
                             fun() -> emit_stats(State) end).
 
 emit_stats(State=#state{socket=Sock, connection_state=ConnState, connection=Conn}) ->
+    RealConnStat = case ConnState of
+                       connected -> running;
+                       _         -> ConnState
+                   end,
     SockInfos = case rabbit_net:getstat(Sock,
             [recv_oct, recv_cnt, send_oct, send_cnt, send_pend]) of
         {ok,    SI} -> SI;
         {error,  _} -> []
     end,
-    Infos = [{pid, Conn}, {state, ConnState}|SockInfos],
+    Infos = [{pid, Conn}, {state, RealConnStat}|SockInfos],
     rabbit_event:notify(connection_stats, Infos),
     State1 = rabbit_event:reset_stats_timer(State, #state.stats_timer),
     ensure_stats_timer(State1).

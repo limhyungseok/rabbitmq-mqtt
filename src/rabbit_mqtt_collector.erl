@@ -33,6 +33,9 @@ start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 register(ClientId, Pid) ->
+    gen_server:abcast(rabbit_mqtt_util:get_running_nodes(),
+                      rabbit_mqtt_collector,
+                      {register, ClientId}),
     gen_server:call(rabbit_mqtt_collector, {register, ClientId, Pid}, infinity).
 
 unregister(ClientId, Pid) ->
@@ -68,6 +71,18 @@ handle_call({unregister, ClientId, Pid}, _From, State = #state{client_ids = Ids}
 
 handle_call(Msg, _From, State) ->
     {stop, {unhandled_call, Msg}, State}.
+
+handle_cast({register, ClientId}, 
+            State = #state{client_ids = Ids}) ->
+    Ids1 = case dict:find(ClientId, Ids) of
+               {ok, {OldPid, MRef}} ->
+                   catch gen_server2:cast(OldPid, duplicate_id),
+                   erlang:demonitor(MRef),
+                   dict:erase(ClientId, Ids);
+               error ->
+                   Ids
+           end,
+    {noreply, State#state{client_ids = Ids1}};
 
 handle_cast(Msg, State) ->
     {stop, {unhandled_cast, Msg}, State}.
