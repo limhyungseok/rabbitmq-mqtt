@@ -19,7 +19,7 @@
 -behaviour(rabbit_mqtt_retained_msg_store).
 -include("rabbit_mqtt.hrl").
 
--export([new/2, recover/2, insert/3, lookup/2, delete/2, terminate/1]).
+-export([new/2, new/3, recover/2, insert/3, lookup/2, delete/2, terminate/1, all/1]).
 
 -record(store_state, {
   %% DETS table name
@@ -29,6 +29,11 @@
 
 new(Dir, VHost) ->
   Tid = open_table(Dir, VHost),
+  #store_state{table = Tid}.
+
+new(Dir, VHost, Messages) ->
+  #store_state{table = Tid} = new(Dir, VHost),
+  dets:insert(Tid, Messages),
   #store_state{table = Tid}.
 
 recover(Dir, VHost) ->
@@ -61,3 +66,5 @@ table_options(Path) ->
     {file, Path}, {ram_file, true}, {repair, true},
     {auto_save, rabbit_misc:get_env(rabbit_mqtt,
                                     retained_message_store_dets_sync_interval, 2000)}].
+
+all(#store_state{table = T}) -> dets:foldl(fun(Row, Acc) -> [Row | Acc] end, [], T).

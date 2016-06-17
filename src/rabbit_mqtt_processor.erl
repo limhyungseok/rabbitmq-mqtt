@@ -17,8 +17,8 @@
 -module(rabbit_mqtt_processor).
 
 -export([info/2, initial_state/2, initial_state/3,
-         process_frame/2, amqp_pub/2, amqp_callback/2, send_will/1,
-         close_connection/1]).
+         process_frame/2, amqp_pub/2, amqp_callback/2,
+         close_connection/1, close_connection_and_relay/1, http_relay/3]).
 
 %% for testing purposes
 -export([get_vhost_username/1]).
@@ -168,6 +168,7 @@ process_request(?SUBSCRIBE,
                 #proc_state{channels = {Channel, _},
                             exchange = Exchange,
                             retainer_pid = RPid,
+                            message_id = ProcMessageId,
                             send_fun = SendFun } = PState0) ->
     check_subscribe_or_die(Topics, fun() ->
         {QosResponse, PState1} =
@@ -198,7 +199,7 @@ process_request(?SUBSCRIBE,
                             {true, X} -> Acc + X;
                             false     -> Acc
                           end
-                        end, MessageId, Topics),
+                        end, ProcMessageId, Topics),
         {ok, PState1#proc_state{message_id = N}}
     end, PState0);
 
@@ -235,6 +236,19 @@ process_request(?UNSUBSCRIBE,
                          variable = #mqtt_frame_suback{ message_id = MessageId }},
                 PState),
     {ok, PState #proc_state{ subscriptions = Subs1 }};
+
+process_request(?PINGREQ, #mqtt_frame{ variable = <<Status>> }, 
+                PState = #proc_state{ auth_state = #auth_state{ username = Username }, 
+                                      client_id = ClientId,
+                                      client_status = PrevClientStatus,
+                                      send_fun = SendFun}) ->
+    case PrevClientStatus of
+        Status -> void;
+        _ -> relay_client_status(ClientId, Username, Status)
+    end,
+    SendFun(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = ?PINGRESP }},
+                PState),
+    {ok, PState #proc_state{client_status = Status}};
 
 process_request(?PINGREQ, #mqtt_frame{}, #proc_state{ send_fun = SendFun } = PState) ->
     SendFun(#mqtt_frame{ fixed = #mqtt_frame_fixed{ type = ?PINGRESP }},
@@ -387,12 +401,18 @@ maybe_clean_sess(PState = #proc_state { clean_sess = false }) ->
 maybe_clean_sess(PState = #proc_state { clean_sess = true,
                                         connection = Conn,
                                         client_id  = ClientId }) ->
-    {_, Queue} = rabbit_mqtt_util:subcription_queue_name(ClientId),
-    {ok, Channel} = amqp_connection:open_channel(Conn),
-    try amqp_channel:call(Channel, #'queue.delete'{ queue = Queue }) of
-        #'queue.delete_ok'{} -> ok = amqp_channel:close(Channel)
+    {Queue0, Queue1} = rabbit_mqtt_util:subcription_queue_name(ClientId),
+    {ok, Channel0} = amqp_connection:open_channel(Conn),
+    try amqp_channel:call(Channel0, #'queue.delete'{ queue = Queue0 }) of
+        #'queue.delete_ok'{} -> ok = amqp_channel:close(Channel0)
     catch
-        exit:_Error -> ok
+        exit:_Error0 -> ok
+    end,
+    {ok, Channel1} = amqp_connection:open_channel(Conn),
+    try amqp_channel:call(Channel1, #'queue.delete'{ queue = Queue1 }) of
+        #'queue.delete_ok'{} -> ok = amqp_channel:close(Channel1)
+    catch
+        exit:_Error1 -> ok
     end,
     PState.
 
@@ -515,7 +535,8 @@ ensure_queue(Qos, #proc_state{ channels      = {Channel, _},
                                clean_sess    = CleanSess,
                           consumer_tags = {TagQ0, TagQ1} = Tags} = PState) ->
     {QueueQ0, QueueQ1} = rabbit_mqtt_util:subcription_queue_name(ClientId),
-    Qos1Args = case {rabbit_mqtt_util:env(subscription_ttl), CleanSess} of
+    SubscriptionTTL = rabbit_mqtt_util:env(subscription_ttl),
+    Qos1Args = case {SubscriptionTTL, CleanSess} of
                    {undefined, _} ->
                        [];
                    {Ms, false} when is_integer(Ms) ->
@@ -523,13 +544,22 @@ ensure_queue(Qos, #proc_state{ channels      = {Channel, _},
                    _ ->
                        []
                end,
+    Qos0Args = case CleanSess of
+                   false -> Qos0Args1 = case is_integer(SubscriptionTTL) of
+                                            true -> [{<<"x-expires">>, long, SubscriptionTTL}];
+                                            false -> []
+                                        end,
+                            lists:append( [{<<"x-message-ttl">>, long, 0}], Qos0Args1);
+                   _ -> []
+               end,
     QueueSetup =
         case {TagQ0, TagQ1, Qos} of
             {undefined, _, ?QOS_0} ->
                 {QueueQ0,
                  #'queue.declare'{ queue       = QueueQ0,
                                    durable     = false,
-                                   auto_delete = true },
+                                   auto_delete = CleanSess,
+                                   arguments   = Qos0Args},
                  #'basic.consume'{ queue  = QueueQ0,
                                    no_ack = true }};
             {_, undefined, ?QOS_1} ->
@@ -558,6 +588,29 @@ ensure_queue(Qos, #proc_state{ channels      = {Channel, _},
         {exists, Q} ->
             {Q, PState}
     end.
+
+relay_status_for_disconnect(PState) ->
+    case PState of 
+            #proc_state{ auth_state = #auth_state{ username = Username }, client_id = ClientId } ->
+                relay_client_status(ClientId, Username, 0);
+            _ -> void
+    end.
+
+http_relay(Path, Request, HttpOptions) ->
+    case rabbit_mqtt_util:http_get(Path, Request, HttpOptions) of
+        {ok, {{_HTTP, Code, _}, _Headers, Body}} ->
+            case Code of
+                200 -> ok;
+                _ -> rabbit_log:log(connection, error, "relay status error ~p ~p ~n", [Code, Body])
+            end;
+        {error, _} = E -> rabbit_log:log(connection, error, "relay status error ~p ~n", [E])
+    end.
+
+relay_client_status(ClientId, Username, Status) ->
+    [{path, Path}, {conn_timeout, ConnTimeout}, {timeout, Timeout}] = rabbit_mqtt_util:env(relay_status_backend_http),
+    Request = [{username, Username},{clientId, ClientId}, {status, Status}],
+    HttpOptions = [{timeout, Timeout},{connect_timeout, ConnTimeout},{version, "HTTP/1.0"}],
+    spawn(rabbit_mqtt_processor, http_relay, [Path, Request, HttpOptions]).
 
 send_will(PState = #proc_state{ will_msg = WillMsg }) ->
     amqp_pub(WillMsg, PState).
@@ -591,8 +644,14 @@ amqp_pub(#mqtt_msg{ qos        = Qos,
                                    rabbit_mqtt_util:mqtt2amqp(Topic)},
     Headers = [{<<"x-mqtt-publish-qos">>, byte, Qos},
                {<<"x-mqtt-dup">>, bool, Dup}],
-    Msg = #amqp_msg{ props   = #'P_basic'{ headers       = Headers,
-                                           delivery_mode = delivery_mode(Qos)},
+    Props = case Qos of
+                ?QOS_0 -> #'P_basic'{ headers       = Headers,
+                                      delivery_mode = delivery_mode(Qos),
+                                      expiration = <<"0">>};
+                _ -> #'P_basic'{ headers       = Headers,
+                                 delivery_mode = delivery_mode(Qos)}
+            end,
+    Msg = #amqp_msg{ props   = Props,
                      payload = Payload },
     {UnackedPubs1, Ch, SeqNo1} =
         case Qos =:= ?QOS_1 andalso MessageId =/= undefined of
@@ -617,19 +676,40 @@ human_readable_mqtt_version(_) ->
 
 send_client(Frame, #proc_state{ socket = Sock }) ->
     %rabbit_log:info("MQTT sending frame ~p ~n", [Frame]),
-    rabbit_net:port_command(Sock, rabbit_mqtt_frame:serialise(Frame)).
+    try rabbit_net:port_command(Sock, rabbit_mqtt_frame:serialise(Frame))
+    catch
+        error:Reason -> self() ! {inet_reply, Sock, {error, Reason}}
+    end.
 
-close_connection(PState = #proc_state{ connection = undefined }) ->
+close_connection_and_relay(PState = #proc_state{ connection = undefined }) ->
     PState;
+close_connection_and_relay(PState = #proc_state{ connection = _Connection,
+                                                 client_id  = _ClientId }) ->
+    try relay_status_for_disconnect(PState)
+    catch
+        _:EndErrorReason -> rabbit_log:error("~p ~p ~p ~n", [PState, EndErrorReason, erlang:get_stacktrace()])
+    end,
+    
+    close_connection(PState).
+
 close_connection(PState = #proc_state{ connection = Connection,
                                        client_id  = ClientId }) ->
+    try send_will(PState)
+    catch
+        _:EndErrorReason -> rabbit_log:error("~p ~p ~p ~n", [PState, EndErrorReason, erlang:get_stacktrace()])
+    end,
+    
     % todo: maybe clean session
     case ClientId of
         undefined -> ok;
         _         -> ok = rabbit_mqtt_collector:unregister(ClientId, self())
     end,
+    
     %% ignore noproc or other exceptions to avoid debris
-    catch amqp_connection:close(Connection),
+    try amqp_connection:close(Connection)
+    catch
+        _:Reason -> rabbit_log:error("~p ~p", [PState, Reason])
+    end,
     PState #proc_state{ channels   = {undefined, undefined},
                         connection = undefined }.
 
