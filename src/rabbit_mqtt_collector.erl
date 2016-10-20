@@ -33,9 +33,6 @@ start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 register(ClientId, Pid) ->
-    gen_server:abcast(rabbit_mqtt_util:get_running_nodes(),
-                      rabbit_mqtt_collector,
-                      {register, ClientId}),
     gen_server:call(rabbit_mqtt_collector, {register, ClientId, Pid}, infinity).
 
 unregister(ClientId, Pid) ->
