@@ -269,7 +269,7 @@ process_request(?UNSUBSCRIBE,
                 PState),
     {ok, PState #proc_state{ subscriptions = Subs1 }};
 
-process_request(?PINGREQ, #mqtt_frame{ variable = <<Status>> }, 
+process_request(?PINGREQ, #mqtt_frame{ variable = Status }, 
                 PState = #proc_state{ auth_state = #auth_state{ username = Username }, 
                                       client_id = ClientId,
                                       client_status = PrevClientStatus,
