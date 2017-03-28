@@ -105,8 +105,10 @@ parse_frame(Bin, #mqtt_frame_fixed{ type = Type,
             wrap(Fixed, #mqtt_frame_publish { message_id = MessageId }, Rest);
         {?PINGREQ, <<FrameBin:Length/binary, Rest/binary>>} ->
             case Length of
-                1 -> wrap(Fixed, FrameBin, Rest);
-                0 -> wrap(Fixed, Rest)
+                0 -> wrap(Fixed, Rest);
+                _ -> BitLength = 8 * Length,
+                     <<Status:BitLength/big>> = FrameBin,
+                     wrap(Fixed, Status, Rest)
             end ;
         {Subs, <<FrameBin:Length/binary, Rest/binary>>}
           when Subs =:= ?SUBSCRIBE orelse Subs =:= ?UNSUBSCRIBE ->
